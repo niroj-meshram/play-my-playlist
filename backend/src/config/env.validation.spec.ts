@@ -7,6 +7,7 @@ const valid = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5433/db',
   REDIS_URL: 'redis://localhost:6379',
   FRONTEND_ORIGIN: 'http://localhost:3000',
+  JWT_ACCESS_SECRET: 'x'.repeat(48),
 };
 
 describe('validateEnv', () => {
@@ -28,6 +29,27 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...valid, FRONTEND_ORIGIN: 'http://localhost:3000/app' })).toThrow(
       /FRONTEND_ORIGIN/,
     );
+  });
+
+  it('applies auth and rate-limit defaults', () => {
+    const env = validateEnv(valid);
+
+    expect(env.ACCESS_TOKEN_TTL_SECONDS).toBe(900);
+    expect(env.REFRESH_TOKEN_TTL_DAYS).toBe(30);
+    expect(env.THROTTLE_ENABLED).toBe(true);
+  });
+
+  it('rejects a short JWT secret', () => {
+    expect(() => validateEnv({ ...valid, JWT_ACCESS_SECRET: 'short' })).toThrow(
+      /JWT_ACCESS_SECRET/,
+    );
+  });
+
+  it('refuses to disable rate limiting in production', () => {
+    expect(() =>
+      validateEnv({ ...valid, NODE_ENV: 'production', THROTTLE_ENABLED: 'false' }),
+    ).toThrow(/THROTTLE_ENABLED/);
+    expect(validateEnv({ ...valid, THROTTLE_ENABLED: 'false' }).THROTTLE_ENABLED).toBe(false);
   });
 
   it('rejects an out-of-range port', () => {

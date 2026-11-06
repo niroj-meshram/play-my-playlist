@@ -115,8 +115,8 @@ erDiagram
   RoomPlayer ||--o{ RoomMessage : writes
 
   User { uuid id PK; string displayName; string avatarId; ts createdAt; ts lastSeenAt }
-  AuthSession { uuid id PK; uuid userId FK; string refreshTokenHash UK; ts expiresAt; ts revokedAt }
-  Room { uuid id PK; string code UK; uuid hostPlayerId FK "nullable, UK"; enum status "LOBBY|IN_GAME|CLOSED"; enum visibility "INVITE_ONLY"; int maxPlayers; int roundCount; int minPlayableTracks; ts lastActivityAt }
+  AuthSession { uuid id PK; uuid userId FK; string refreshTokenHash UK; string previousTokenHash; ts rotatedAt; ts expiresAt; ts revokedAt }
+  Room { uuid id PK; string code UK; uuid hostPlayerId FK "nullable, UK"; enum status "LOBBY|IN_GAME|CLOSED"; enum visibility "INVITE_ONLY"; int maxPlayers; int roundCount; ts lastActivityAt }
   RoomPlayer { uuid id PK; uuid roomId FK; uuid userId FK; string displayName; string avatarId; enum status "ACTIVE|LEFT"; ts joinedAt; ts leftAt }
   Playlist { uuid id PK; uuid roomPlayerId FK "UK = owner"; uuid roomId FK; string youtubePlaylistId; string sourceUrl "PRIVATE"; string title "PRIVATE"; enum status "PROCESSING|READY|REJECTED"; string rejectionCode; int playableCount; int duplicateCount; ts submittedAt }
   PlaylistTrack { uuid id PK; uuid playlistId FK; uuid roomId FK "denormalised"; string youtubeVideoId; string title; string artist; string thumbnailUrl; int durationSec; int position; enum status "PLAYABLE|DUPLICATE|UNPLAYABLE" }
@@ -263,13 +263,13 @@ The playlist ID is cached in Redis to save quota. The cache never assumes a vide
 | Method & path | Auth | Notes |
 |---|---|---|
 | `POST /auth/guest` `{displayName, avatarId}` | — | Creates a guest user. Returns `{accessToken, expiresAt, user}` and sets the refresh cookie. |
-| `POST /auth/refresh` | cookie | Rotates the refresh token |
-| `POST /auth/logout` | cookie | Revokes the session |
+| `POST /auth/refresh` | cookie + `x-pmp-csrf: 1` | Rotates the refresh token. The just-rotated token is accepted for 30 s (concurrent tabs) without rotating again; any older token revokes the session. |
+| `POST /auth/logout` | cookie + `x-pmp-csrf: 1` | Revokes the session and clears the cookie |
 | `GET /me`, `PATCH /me` | JWT | |
-| `POST /rooms` `{settings}` | JWT | The creator becomes host/leader. Returns `{code, inviteUrl, room}`. |
-| `GET /rooms/:code/preview` | JWT | `{playerCount, maxPlayers, joinable}`. Unknown, closed and full rooms return the same 404. Rate-limited. |
-| `POST /rooms/:code/join` | JWT | Idempotent. Rejected during a game unless already a participant (D9). |
-| `POST /rooms/:code/leave` | member | |
+| `POST /rooms` `{settings?}` | JWT | The creator becomes host/leader. Returns `RoomSnapshotDto`; the frontend builds the invite URL (`/join/{code}`). Settings: `maxPlayers` 3–10 (default 5), `roundCount` 5–20 (default 10). |
+| `GET /rooms/:code/preview` | JWT | `{code, status, playerCount, maxPlayers, joinable}`. Unknown, closed and malformed codes return the same 404. Full or in-game rooms return `joinable: false` so invited friends see why. Rate-limited. |
+| `POST /rooms/:code/join` `{displayName?, avatarId?}` | JWT | Idempotent. Room row locked, so capacity holds under concurrent joins. Display names are unique per room (case-insensitive). Rejected during a game unless already a participant (D9). |
+| `POST /rooms/:code/leave` | member | LOBBY only until M4. A departing host is replaced by the longest-present player; the room closes when empty. |
 | `GET /rooms/:code` | member | `RoomSnapshotDto` (same payload as socket `room:state`) |
 | `PATCH /rooms/:code/settings` | host, LOBBY | |
 | `PUT /rooms/:code/playlist` `{url}` | member, LOBBY | 202 `{status: PROCESSING}`. The result arrives via socket. |

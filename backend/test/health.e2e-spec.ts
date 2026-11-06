@@ -1,20 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
-import type { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ErrorCode } from '@pmp/shared';
 import request from 'supertest';
-import type { App } from 'supertest/types.js';
-import { AppModule } from '../src/app.module.js';
-import { configureApp } from '../src/common/http/configure-app.js';
+import { createTestApp } from './utils/test-app.js';
 
 describe('Health (e2e)', () => {
-  let app: INestApplication<App>;
+  let app: NestExpressApplication;
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    app = moduleRef.createNestApplication();
-    configureApp(app);
-    await app.init();
+    ({ app } = await createTestApp());
   });
 
   afterAll(async () => {

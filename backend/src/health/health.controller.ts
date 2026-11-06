@@ -1,8 +1,12 @@
 import { Controller, Get, HttpStatus } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ErrorCode, type LivenessResponse, type ReadinessResponse } from '@pmp/shared';
+import { Public } from '../common/auth/public.decorator.js';
 import { AppException } from '../common/errors/app.exception.js';
 import { HealthService } from './health.service.js';
 
+@Public()
+@SkipThrottle()
 @Controller('health')
 export class HealthController {
   constructor(private readonly health: HealthService) {}

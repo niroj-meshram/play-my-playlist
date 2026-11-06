@@ -4,6 +4,8 @@ export const ROOM_LIMITS = {
   maxPlayers: 10,
   defaultMaxPlayers: 5,
   defaultRoundCount: 10,
+  minRoundCount: 5,
+  maxRoundCount: 20,
   minPlayableTracks: 5,
   disconnectGraceSeconds: 30,
 } as const;

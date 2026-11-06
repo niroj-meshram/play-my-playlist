@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { ConsoleLogger, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
 import { configureApp } from './common/http/configure-app.js';
 import type { EnvironmentVariables, LogLevelName } from './config/env.validation.js';
@@ -18,7 +19,10 @@ function createLogger(): ConsoleLogger {
 }
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { logger: createLogger(), bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    logger: createLogger(),
+    bufferLogs: true,
+  });
   configureApp(app);
 
   const port = app.get<ConfigService<EnvironmentVariables, true>>(ConfigService).get('PORT', {
