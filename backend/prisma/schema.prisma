@@ -1,0 +1,13 @@
+// Play My Playlist — database schema.
+// Domain models are added per milestone with versioned migrations (never `prisma db push`).
+// Target model: docs/architecture.md §3.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}

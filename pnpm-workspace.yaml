@@ -1,0 +1,14 @@
+packages:
+  - frontend
+  - backend
+  - packages/*
+
+# pnpm only runs dependency install scripts that are explicitly allowed.
+onlyBuiltDependencies:
+  - prisma
+  - '@prisma/engines'
+ignoredBuiltDependencies:
+  - '@nestjs/core'
+  - '@parcel/watcher'
+  - sharp
+  - unrs-resolver

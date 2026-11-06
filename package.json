@@ -1,0 +1,23 @@
+{
+  "name": "play-my-playlist",
+  "private": true,
+  "packageManager": "pnpm@10.33.1",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @pmp/shared build && pnpm --parallel --filter @pmp/backend --filter @pmp/frontend run dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "test:e2e": "pnpm --filter @pmp/backend run test:e2e",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "infra:up": "docker compose -f infrastructure/docker/docker-compose.yml up -d --wait",
+    "infra:down": "docker compose -f infrastructure/docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10"
+  }
+}

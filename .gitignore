@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# generated
+backend/src/generated/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# tests
+coverage/
+playwright-report/
+test-results/
+
+# logs & OS
+*.log
+.DS_Store
+
+# editor
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# misc
+*.pem
+.vercel
