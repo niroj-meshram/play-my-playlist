@@ -247,6 +247,7 @@ describe('Rooms (e2e)', () => {
         'id',
         'isHost',
         'joinedAt',
+        'presence',
       ]);
     });
   });

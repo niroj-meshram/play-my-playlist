@@ -55,4 +55,14 @@ describe('validateEnv', () => {
   it('rejects an out-of-range port', () => {
     expect(() => validateEnv({ ...valid, PORT: '70000' })).toThrow(/PORT/);
   });
+  it('applies presence timer defaults and requires the debounce to be shorter than the grace', () => {
+    const env = validateEnv(valid);
+    expect(env.PRESENCE_GRACE_MS).toBe(30_000);
+    expect(env.PRESENCE_DEBOUNCE_MS).toBe(5_000);
+    expect(env.GRACE_SWEEP_INTERVAL_MS).toBe(1_000);
+
+    expect(() =>
+      validateEnv({ ...valid, PRESENCE_GRACE_MS: '1000', PRESENCE_DEBOUNCE_MS: '1000' }),
+    ).toThrow(/PRESENCE_DEBOUNCE_MS/);
+  });
 });

@@ -1,12 +1,20 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { ErrorCode, ROOM_LIMITS, type RoomPreviewDto, type RoomSnapshotDto } from '@pmp/shared';
+import {
+  ErrorCode,
+  PlayerPresence,
+  ROOM_LIMITS,
+  type RoomPreviewDto,
+  type RoomSnapshotDto,
+} from '@pmp/shared';
 import { AppException } from '../common/errors/app.exception.js';
 import { Prisma, RoomPlayerStatus, RoomStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { PresenceService } from '../realtime/presence/presence.service.js';
+import { RoomBroadcaster } from '../realtime/room-broadcaster.service.js';
 import type { CreateRoomDto } from './dto/create-room.dto.js';
 import type { JoinRoomDto } from './dto/join-room.dto.js';
 import type { RoomSettingsInputDto } from './dto/room-settings.dto.js';
-import { pickNextHost } from './host-succession.js';
+import { pickNextHost, type HostCandidate } from './host-succession.js';
 import { RoomCodeGenerator } from './room-code.generator.js';
 import { roomNotFound } from './room-code.pipe.js';
 import { ROOM_SNAPSHOT_SELECT, toRoomPreviewDto, toRoomSnapshotDto } from './room.mapper.js';
@@ -22,6 +30,11 @@ interface LockedRoom {
   hostPlayerId: string | null;
 }
 
+export interface RoomMembership {
+  roomId: string;
+  playerId: string;
+}
+
 @Injectable()
 export class RoomsService {
   private readonly logger = new Logger(RoomsService.name);
@@ -29,6 +42,8 @@ export class RoomsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly codes: RoomCodeGenerator,
+    private readonly presence: PresenceService,
+    private readonly broadcaster: RoomBroadcaster,
   ) {}
 
   /** Creates a room; the creator joins as its host using their profile name and avatar. */
@@ -40,7 +55,7 @@ export class RoomsService {
 
     for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt += 1) {
       try {
-        return await this.prisma.$transaction(async (tx) => {
+        const created = await this.prisma.$transaction(async (tx) => {
           const room = await tx.room.create({
             data: {
               code: this.codes.generate(),
@@ -59,8 +74,10 @@ export class RoomsService {
             select: { id: true },
           });
           await tx.room.update({ where: { id: room.id }, data: { hostPlayerId: host.id } });
-          return this.snapshot(tx, room.id, host.id);
+          return { roomId: room.id, playerId: host.id };
         });
+        await this.presence.markJoined(created.roomId, created.playerId);
+        return await this.snapshot(this.prisma, created.roomId, created.playerId);
       } catch (error) {
         // The only unique value a new room can collide on is its code: retry with a fresh one.
         if (isUniqueViolation(error) && attempt < MAX_CODE_ATTEMPTS) {
@@ -95,7 +112,21 @@ export class RoomsService {
     });
     const viewer = room?.players.find((p) => p.userId === userId);
     if (!room || room.status === RoomStatus.CLOSED || !viewer) throw roomNotFound();
-    return toRoomSnapshotDto(room, viewer.id);
+    return toRoomSnapshotDto(room, viewer.id, await this.presenceOf(room.id, room.players));
+  }
+
+  /** Resolves the caller's active membership; anyone else gets the uniform room 404. */
+  async getMembership(code: string, userId: string): Promise<RoomMembership> {
+    const player = await this.prisma.roomPlayer.findFirst({
+      where: {
+        userId,
+        status: RoomPlayerStatus.ACTIVE,
+        room: { code, status: { not: RoomStatus.CLOSED } },
+      },
+      select: { id: true, roomId: true },
+    });
+    if (!player) throw roomNotFound();
+    return { roomId: player.roomId, playerId: player.id };
   }
 
   /**
@@ -103,7 +134,7 @@ export class RoomsService {
    * cannot race with concurrent joins.
    */
   async join(code: string, userId: string, dto: JoinRoomDto): Promise<RoomSnapshotDto> {
-    return this.prisma.$transaction(async (tx) => {
+    const { roomId, playerId, joined } = await this.prisma.$transaction(async (tx) => {
       const room = await this.lockRoom(tx, code);
       const existing = await tx.roomPlayer.findUnique({
         where: { roomId_userId: { roomId: room.id, userId } },
@@ -111,7 +142,7 @@ export class RoomsService {
       });
 
       if (existing?.status === RoomPlayerStatus.ACTIVE) {
-        return this.snapshot(tx, room.id, existing.id);
+        return { roomId: room.id, playerId: existing.id, joined: false };
       }
       if (room.status !== RoomStatus.LOBBY) {
         throw new AppException(
@@ -154,8 +185,17 @@ export class RoomsService {
           });
 
       await tx.room.update({ where: { id: room.id }, data: { lastActivityAt: new Date() } });
-      return this.snapshot(tx, room.id, player.id);
+      return { roomId: room.id, playerId: player.id, joined: true };
     });
+
+    if (joined) await this.presence.markJoined(roomId, playerId);
+    const snapshot = await this.snapshot(this.prisma, roomId, playerId);
+    const player = snapshot.players.find((p) => p.id === playerId);
+    if (joined && player) {
+      this.broadcaster.toRoom(roomId, 'room:player-joined', { player });
+      this.logger.log(`Player ${playerId} joined room ${roomId}`);
+    }
+    return snapshot;
   }
 
   /**
@@ -164,7 +204,7 @@ export class RoomsService {
    * game engine (M4) and is rejected until then.
    */
   async leave(code: string, userId: string): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+    const { roomId, playerId, newHostId } = await this.prisma.$transaction(async (tx) => {
       const room = await this.lockRoom(tx, code);
       const player = await this.requireActivePlayer(tx, room.id, userId);
       if (room.status !== RoomStatus.LOBBY) {
@@ -186,17 +226,25 @@ export class RoomsService {
           where: { roomId: room.id, status: RoomPlayerStatus.ACTIVE },
           select: { id: true, joinedAt: true },
         });
-        const nextHost = pickNextHost(active, player.id);
+        const nextHost = await this.pickSuccessor(room.id, active, player.id);
         await tx.room.update({
           where: { id: room.id },
           data: nextHost
             ? { hostPlayerId: nextHost.id, lastActivityAt: now }
             : { hostPlayerId: null, status: RoomStatus.CLOSED, lastActivityAt: now },
         });
-        return;
+        return { roomId: room.id, playerId: player.id, newHostId: nextHost?.id ?? null };
       }
       await tx.room.update({ where: { id: room.id }, data: { lastActivityAt: now } });
+      return { roomId: room.id, playerId: player.id, newHostId: null };
     });
+
+    await this.presence.remove(roomId, playerId);
+    this.broadcaster.removePlayer(roomId, playerId);
+    this.broadcaster.toRoom(roomId, 'room:player-left', { playerId });
+    if (newHostId)
+      this.broadcaster.toRoom(roomId, 'room:host-changed', { hostPlayerId: newHostId });
+    this.logger.log(`Player ${playerId} left room ${roomId}`);
   }
 
   async updateSettings(
@@ -204,7 +252,7 @@ export class RoomsService {
     userId: string,
     dto: RoomSettingsInputDto,
   ): Promise<RoomSnapshotDto> {
-    return this.prisma.$transaction(async (tx) => {
+    const { roomId, playerId } = await this.prisma.$transaction(async (tx) => {
       const room = await this.lockRoom(tx, code);
       const player = await this.requireActivePlayer(tx, room.id, userId);
 
@@ -243,8 +291,26 @@ export class RoomsService {
           lastActivityAt: new Date(),
         },
       });
-      return this.snapshot(tx, room.id, player.id);
+      return { roomId: room.id, playerId: player.id };
     });
+
+    const snapshot = await this.snapshot(this.prisma, roomId, playerId);
+    this.broadcaster.toRoom(roomId, 'room:settings-updated', { settings: snapshot.settings });
+    return snapshot;
+  }
+
+  /** Longest-present player who is still online; falls back to anyone if all are away. */
+  private async pickSuccessor(
+    roomId: string,
+    active: readonly HostCandidate[],
+    departingPlayerId: string,
+  ): Promise<HostCandidate | null> {
+    const presence = await this.presence.getMany(
+      roomId,
+      active.map((p) => p.id),
+    );
+    const online = active.filter((p) => presence.get(p.id) !== PlayerPresence.AWAY);
+    return pickNextHost(online, departingPlayerId) ?? pickNextHost(active, departingPlayerId);
   }
 
   /** Row lock (SELECT … FOR UPDATE) serialising all membership changes of one room. */
@@ -291,12 +357,22 @@ export class RoomsService {
     }
   }
 
-  private async snapshot(tx: Tx, roomId: string, viewerPlayerId: string): Promise<RoomSnapshotDto> {
-    const room = await tx.room.findUniqueOrThrow({
+  private async snapshot(db: Tx, roomId: string, viewerPlayerId: string): Promise<RoomSnapshotDto> {
+    const room = await db.room.findUniqueOrThrow({
       where: { id: roomId },
       select: ROOM_SNAPSHOT_SELECT,
     });
-    return toRoomSnapshotDto(room, viewerPlayerId);
+    return toRoomSnapshotDto(room, viewerPlayerId, await this.presenceOf(roomId, room.players));
+  }
+
+  private presenceOf(
+    roomId: string,
+    players: readonly { id: string }[],
+  ): Promise<Map<string, PlayerPresence>> {
+    return this.presence.getMany(
+      roomId,
+      players.map((p) => p.id),
+    );
   }
 }
 

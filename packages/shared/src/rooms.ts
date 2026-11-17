@@ -1,4 +1,5 @@
 import type { AvatarId } from './auth.js';
+import type { PlayerPresence } from './realtime.js';
 
 export const ROOM_CODE_LENGTH = 6;
 /** Unambiguous characters only (no 0/O, 1/I/L). */
@@ -46,6 +47,7 @@ export interface RoomPlayerDto {
   avatarId: AvatarId;
   isHost: boolean;
   joinedAt: string;
+  presence: PlayerPresence;
 }
 
 /** Full lobby state, visible to active members only. Contains no private game data. */

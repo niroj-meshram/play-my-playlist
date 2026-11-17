@@ -13,6 +13,10 @@ export function applyTestEnv(): void {
   process.env['THROTTLE_ENABLED'] ??= 'false';
   process.env['JWT_ACCESS_SECRET'] ??= 'test-secret-that-is-long-enough-for-validation-0123456789';
   process.env['FRONTEND_ORIGIN'] ??= 'http://localhost:3000';
+  // Short presence timers keep realtime tests fast.
+  process.env['PRESENCE_GRACE_MS'] ??= '600';
+  process.env['PRESENCE_DEBOUNCE_MS'] ??= '200';
+  process.env['GRACE_SWEEP_INTERVAL_MS'] ??= '50';
 
   process.env['DATABASE_URL'] =
     process.env['TEST_DATABASE_URL'] ?? toTestDatabaseUrl(requireEnv('DATABASE_URL'));

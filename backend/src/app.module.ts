@@ -11,8 +11,10 @@ import { validateEnv, type EnvironmentVariables } from './config/env.validation.
 import { HealthModule } from './health/health.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { REDIS_CLIENT } from './redis/redis.constants.js';
+import { RealtimeModule } from './realtime/realtime.module.js';
 import { RedisModule } from './redis/redis.module.js';
 import { RoomsModule } from './rooms/rooms.module.js';
+import { SchedulerModule } from './scheduler/scheduler.module.js';
 import { UsersModule } from './users/users.module.js';
 
 @Module({
@@ -25,13 +27,17 @@ import { UsersModule } from './users/users.module.js';
       useFactory: (config: ConfigService<EnvironmentVariables, true>, redis: Redis) => ({
         throttlers: [{ name: 'default', ...RATE_LIMITS.global }],
         storage: new RedisThrottlerStorage(redis),
-        skipIf: () => !config.get('THROTTLE_ENABLED', { infer: true }),
+        // Socket.IO commands have their own per-connection limit (WsRateLimitInterceptor).
+        skipIf: (context) =>
+          context.getType() !== 'http' || !config.get('THROTTLE_ENABLED', { infer: true }),
         errorMessage: 'Too many requests. Please slow down and try again shortly.',
       }),
     }),
     AuthModule,
     UsersModule,
     RoomsModule,
+    RealtimeModule,
+    SchedulerModule,
     HealthModule,
   ],
   providers: [
