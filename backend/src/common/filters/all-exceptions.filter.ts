@@ -10,7 +10,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     if (host.getType() !== 'http') {
-      // WebSocket errors are handled by the realtime layer (milestone M2).
+      // Socket.IO command errors become acknowledgements in WsAckInterceptor.
       return;
     }
 

@@ -18,6 +18,9 @@ export const ErrorCode = {
   NOT_ROOM_HOST: 'NOT_ROOM_HOST',
   DISPLAY_NAME_TAKEN: 'DISPLAY_NAME_TAKEN',
   ROOM_SETTINGS_CONFLICT: 'ROOM_SETTINGS_CONFLICT',
+  // Realtime
+  NOT_SUBSCRIBED: 'NOT_SUBSCRIBED',
+  SESSION_REPLACED: 'SESSION_REPLACED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

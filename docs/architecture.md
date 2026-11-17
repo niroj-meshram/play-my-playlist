@@ -1,7 +1,7 @@
 # Play My Playlist — Architecture
 
-Status: **Approved — M0 (project foundation) in progress**
-Last updated: 2026-11-06
+Status: **Approved — M0–M2 done (M2 includes a minimal lobby UI pulled forward from M6); next: M3**
+Last updated: 2026-11-17
 
 This document is the source of truth for architecture and game rules.
 Where it conflicts with `PROJECT_PROMPT.md`, this document wins (see §1 Decision log).
@@ -310,7 +310,7 @@ Error envelope: `{ error: { code, message, details? }, requestId }`. Error codes
 |---|---|---|
 | `room:state` | socket | Full snapshot |
 | `room:player-joined` / `room:player-left` | room | `{player}` |
-| `room:presence` | room | `{playerId, connected}` (debounced ~5 s) |
+| `room:presence` | room | `{playerId, presence: 'ONLINE'\|'RECONNECTING'\|'AWAY'}`. Disconnects shorter than the ~5 s debounce are never broadcast. RECONNECTING = inside the 30 s grace (still counts as online for voting, D5); AWAY = past it. |
 | `room:host-changed` | room | `{hostPlayerId}`. The new host's device becomes the speaker. |
 | `room:settings-updated` | room | |
 | `playlist:submission-updated` | room | `{playerId, ready}` only |
@@ -324,7 +324,11 @@ Error envelope: `{ error: { code, message, details? }, requestId }`. Error codes
 | `game:round-revealed` | room | `{roundNumber, owner, votes[{voter,suspect,correct}], roundScores, scoreboard}` |
 | `game:finished` | room | `{ranking, awards}` |
 | `chat:message` | room | `{id, playerId, body, createdAt}` |
-| `session:replaced` | socket | Another tab took over this player |
+| `session:replaced` | socket | Another tab took over this player. The old socket is then disconnected and does not reconnect by itself. |
+
+Command errors are acknowledged as `{ok:false, error:{code, message}}` with the same codes as REST (`ROOM_NOT_FOUND` for non-members, unknown and malformed codes alike; `VALIDATION_FAILED`; `RATE_LIMITED`; `NOT_SUBSCRIBED` for `sync:request` before `room:subscribe`). A rejected handshake fails with `connect_error` and `data.code = 'UNAUTHORIZED'`.
+
+Lobby events (M2) carry no `stateVersion`: their patches are idempotent and every (re)connect or tab refocus resyncs the full snapshot. Game events add `stateVersion` with `Game.stateVersion` in M4.
 
 The live scoreboard (D1) is part of every snapshot and updates only in `game:round-revealed`, never during voting.
 
@@ -347,8 +351,11 @@ The live scoreboard (D1) is part of every snapshot and updates only in `game:rou
 - **Known limitation:** clearing cookies loses the guest identity.
 
 ### Grace timers (no BullMQ needed)
-Because phases have no deadlines, the only timers are the 30 s grace periods (player away, host migration).
-They're stored in a Redis sorted set (`member = kind:roomId:playerId`, `score = dueAt`).
+Because phases have no deadlines, the only timers are the presence debounce (~5 s) and the 30 s grace period (player away, host migration).
+They're stored in a Redis sorted set (`member = kind:roomId:playerId`, `kind = reconnecting|away`, `score = dueAt`).
+Socket ownership (`pmp:room:{roomId}:sockets`) and public presence (`pmp:room:{roomId}:presence`) are Redis hashes; every transition (connect, disconnect, expire, join, leave) is one Lua script, so instances cannot interleave.
+A REST join starts the player ONLINE with both timers running; the client's socket cancels them on subscribe, and a player who never connects becomes AWAY.
+If every player is away when the host's grace ends, the host role stays put and goes to the first player who reconnects.
 Each instance runs a 1 s sweeper that claims due entries with `ZREM` (only one instance wins). The sweeper then:
 - marks the player away;
 - re-checks whether voting is complete;
@@ -413,7 +420,7 @@ Approved dependencies: pnpm workspaces, `@nestjs/config`, `@nestjs/jwt`, `@nestj
 |---|---|---|
 | M0 | Foundation: workspaces, tooling, docker-compose, Nest + Next skeletons, Prisma, Redis, `@pmp/shared`, `/health` | Dev stack starts; lint, typecheck and tests pass |
 | M1 | Guest auth, rooms, join/leave, settings, rate limits | Supertest: auth, idempotent join, capacity, uniform 404 |
-| M2 | Realtime lobby: WS auth, subscribe/resync, presence, grace sweeper, host migration, multi-tab | 5-client socket tests incl. reconnect |
+| M2 | Realtime lobby: WS auth, subscribe/resync, presence, grace sweeper, host migration, multi-tab. Also a minimal lobby UI (create, join by code or link, live player list, host settings) | 5-client socket tests incl. reconnect |
 | M3 | Playlist ingestion: parser, Data API, pagination, playability filter, duplicate songs, quota guard, cache | Unit + mocked-API integration tests; lobby leak test |
 | M4 | Game engine: state machine, balanced round plan, leader controls, playback reports, track replacement | Transition and exactly-once tests |
 | M5 | Voting, scoring (10/10/5), reveal, live scoreboard, awards, rematch | Concurrent-vote, idempotent-scoring and full 5-player game tests; privacy leak test |

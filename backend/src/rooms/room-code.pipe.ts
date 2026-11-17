@@ -7,12 +7,17 @@ import { ROOM_CODE_PATTERN } from './room-code.generator.js';
 @Injectable()
 export class ParseRoomCodePipe implements PipeTransform<unknown, string> {
   transform(value: unknown): string {
-    const code = typeof value === 'string' ? value.trim().toUpperCase() : '';
-    if (!ROOM_CODE_PATTERN.test(code)) {
-      throw roomNotFound();
-    }
-    return code;
+    return normalizeRoomCode(value);
   }
+}
+
+/** Shared by REST and Socket.IO so both treat codes identically. */
+export function normalizeRoomCode(value: unknown): string {
+  const code = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  if (!ROOM_CODE_PATTERN.test(code)) {
+    throw roomNotFound();
+  }
+  return code;
 }
 
 export function roomNotFound(): AppException {

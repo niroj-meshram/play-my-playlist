@@ -381,7 +381,9 @@ Examples:
 
 Never commit credentials, generated secrets or production data.
 
-Do not push changes unless explicitly requested.
+Never commit or push without the user's explicit permission for that specific commit or push. Finishing a task or milestone is not permission: report the work and ask first.
+
+Ask before doing anything big that could make or break the project, such as database migrations or schema changes, deleting or overwriting files or data, adding or upgrading dependencies, large refactors, or other hard-to-reverse actions. Present the plan and wait for approval.
 
 ## 14. Working With Requirements
 

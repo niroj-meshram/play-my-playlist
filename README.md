@@ -31,6 +31,15 @@ pnpm infra:up        # PostgreSQL on localhost:5433, Redis on localhost:6379
 pnpm dev             # API http://localhost:4000/api/v1, web http://localhost:3000
 ```
 
+The API serves Socket.IO on the `/game` namespace at the same origin. If port 3000 is taken, run the web app on another port and allow that origin in the API:
+
+```bash
+FRONTEND_ORIGIN=http://localhost:3100 pnpm --filter @pmp/backend dev
+pnpm --filter @pmp/frontend exec next dev -p 3100
+```
+
+Optional presence timers (`PRESENCE_GRACE_MS`, `PRESENCE_DEBOUNCE_MS`, `GRACE_SWEEP_INTERVAL_MS`) are documented in `backend/.env.example`.
+
 ## Quality checks
 
 ```bash

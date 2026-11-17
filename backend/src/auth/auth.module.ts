@@ -1,7 +1,11 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
-import { ACCESS_TOKEN_AUDIENCE, ACCESS_TOKEN_ISSUER } from '../common/auth/access-token.guard.js';
+import {
+  ACCESS_TOKEN_AUDIENCE,
+  ACCESS_TOKEN_ISSUER,
+  AccessTokenVerifier,
+} from '../common/auth/access-token.verifier.js';
 import type { EnvironmentVariables } from '../config/env.validation.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
@@ -23,7 +27,7 @@ import { AuthService } from './auth.service.js';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService],
-  exports: [JwtModule],
+  providers: [AuthService, AccessTokenVerifier],
+  exports: [JwtModule, AccessTokenVerifier],
 })
 export class AuthModule {}

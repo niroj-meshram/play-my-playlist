@@ -67,6 +67,27 @@ export class EnvironmentVariables {
   @Max(5)
   TRUST_PROXY_HOPS: number = 0;
 
+  /** How long a disconnected player stays "online" (RECONNECTING) before becoming AWAY. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(100)
+  @Max(300_000)
+  PRESENCE_GRACE_MS: number = 30_000;
+
+  /** Disconnects shorter than this are never broadcast (avoids flicker on network blips). */
+  @Type(() => Number)
+  @IsInt()
+  @Min(50)
+  @Max(60_000)
+  PRESENCE_DEBOUNCE_MS: number = 5_000;
+
+  /** How often each instance checks for expired grace timers. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(20)
+  @Max(10_000)
+  GRACE_SWEEP_INTERVAL_MS: number = 1_000;
+
   /** Rate limiting can only be disabled outside production (used by e2e tests). */
   @Transform(({ value }) => (typeof value === 'string' ? value.toLowerCase() === 'true' : value))
   @IsBoolean()
@@ -88,6 +109,12 @@ export function validateEnv(raw: Record<string, unknown>): EnvironmentVariables 
   if (env.NODE_ENV === 'production' && !env.THROTTLE_ENABLED) {
     throw new Error(
       'Invalid environment configuration: THROTTLE_ENABLED cannot be false in production',
+    );
+  }
+
+  if (env.PRESENCE_DEBOUNCE_MS >= env.PRESENCE_GRACE_MS) {
+    throw new Error(
+      'Invalid environment configuration: PRESENCE_DEBOUNCE_MS must be lower than PRESENCE_GRACE_MS',
     );
   }
 

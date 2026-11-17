@@ -2,14 +2,17 @@ import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
+import type { Redis } from 'ioredis';
 import type { EnvironmentVariables } from '../../config/env.validation.js';
+import { RedisIoAdapter } from '../../realtime/redis-io.adapter.js';
+import { REDIS_CLIENT } from '../../redis/redis.constants.js';
 import { AllExceptionsFilter } from '../filters/all-exceptions.filter.js';
 import { createValidationPipe } from './create-validation-pipe.js';
 import { requestIdMiddleware } from './request-id.middleware.js';
 
 export const API_PREFIX = 'api/v1';
 
-/** HTTP pipeline shared by `main.ts` and the e2e tests, so tests exercise production wiring. */
+/** HTTP and Socket.IO pipeline shared by `main.ts` and the e2e tests, so tests exercise production wiring. */
 export function configureApp(app: NestExpressApplication): void {
   const config = app.get<ConfigService<EnvironmentVariables, true>>(ConfigService);
 
@@ -27,5 +30,12 @@ export function configureApp(app: NestExpressApplication): void {
   });
   app.useGlobalPipes(createValidationPipe());
   app.useGlobalFilters(new AllExceptionsFilter());
+  app.useWebSocketAdapter(
+    new RedisIoAdapter(
+      app,
+      app.get<Redis>(REDIS_CLIENT),
+      config.get('FRONTEND_ORIGIN', { infer: true }),
+    ),
+  );
   app.enableShutdownHooks();
 }

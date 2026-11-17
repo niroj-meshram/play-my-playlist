@@ -1,15 +1,17 @@
-import type {
-  AvatarId,
-  RoomPlayerDto,
-  RoomPreviewDto,
-  RoomSnapshotDto,
-  RoomStatus,
-  RoomVisibility,
+import {
+  PlayerPresence,
+  type AvatarId,
+  type RoomPlayerDto,
+  type RoomPreviewDto,
+  type RoomSnapshotDto,
+  type RoomStatus,
+  type RoomVisibility,
 } from '@pmp/shared';
 import type { Prisma } from '../generated/prisma/client.js';
 
 /** Fields loaded for a snapshot. `userId` is used to find the viewer and is never serialised. */
 export interface RoomWithActivePlayers {
+  id: string;
   code: string;
   status: RoomStatus;
   visibility: RoomVisibility;
@@ -20,6 +22,7 @@ export interface RoomWithActivePlayers {
 }
 
 export const ROOM_SNAPSHOT_SELECT = {
+  id: true,
   code: true,
   status: true,
   visibility: true,
@@ -36,6 +39,7 @@ export const ROOM_SNAPSHOT_SELECT = {
 export function toRoomSnapshotDto(
   room: RoomWithActivePlayers,
   viewerPlayerId: string,
+  presence: ReadonlyMap<string, PlayerPresence>,
 ): RoomSnapshotDto {
   return {
     code: room.code,
@@ -49,6 +53,7 @@ export function toRoomSnapshotDto(
       avatarId: p.avatarId as AvatarId,
       isHost: p.id === room.hostPlayerId,
       joinedAt: p.joinedAt.toISOString(),
+      presence: presence.get(p.id) ?? PlayerPresence.AWAY,
     })),
     viewerPlayerId,
   };
