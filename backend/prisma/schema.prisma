@@ -74,8 +74,10 @@ model Room {
   updatedAt      DateTime       @updatedAt
   lastActivityAt DateTime       @default(now())
 
-  hostPlayer RoomPlayer?  @relation("RoomHost", fields: [hostPlayerId], references: [id], onDelete: SetNull)
-  players    RoomPlayer[] @relation("RoomPlayers")
+  hostPlayer     RoomPlayer?     @relation("RoomHost", fields: [hostPlayerId], references: [id], onDelete: SetNull)
+  players        RoomPlayer[]    @relation("RoomPlayers")
+  playlists      Playlist[]
+  playlistTracks PlaylistTrack[]
 
   @@index([status, lastActivityAt])
 }
@@ -91,10 +93,74 @@ model RoomPlayer {
   joinedAt    DateTime         @default(now())
   leftAt      DateTime?
 
-  room       Room  @relation("RoomPlayers", fields: [roomId], references: [id], onDelete: Cascade)
-  user       User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  hostedRoom Room? @relation("RoomHost")
+  room       Room      @relation("RoomPlayers", fields: [roomId], references: [id], onDelete: Cascade)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hostedRoom Room?     @relation("RoomHost")
+  /// PRIVATE: never select this relation on a public read path except for `status`.
+  playlist   Playlist?
 
   @@unique([roomId, userId])
   @@index([roomId, status, joinedAt])
+}
+
+// ─── Playlists ───────────────────────────────────────────────────────────────
+
+enum PlaylistStatus {
+  PROCESSING
+  READY
+  REJECTED
+}
+
+enum PlaylistTrackStatus {
+  PLAYABLE
+  /// Already PLAYABLE in another READY playlist of the room when this one was ingested (D6).
+  DUPLICATE
+}
+
+/// A player's submission. The roomPlayerId link, sourceUrl and title are PRIVATE until the reveal.
+model Playlist {
+  id                  String         @id @default(uuid()) @db.Uuid
+  roomId              String         @db.Uuid
+  roomPlayerId        String         @unique @db.Uuid
+  youtubePlaylistId   String         @db.VarChar(64)
+  sourceUrl           String         @db.VarChar(2048)
+  title               String?        @db.VarChar(200)
+  status              PlaylistStatus @default(PROCESSING)
+  rejectionCode       String?        @db.VarChar(40)
+  playableCount       Int            @default(0)
+  duplicateCount      Int            @default(0)
+  /// Changes on every submission; a background job whose ID no longer matches is discarded.
+  submissionId        String         @db.Uuid
+  attempts            Int            @default(0) @db.SmallInt
+  submittedAt         DateTime       @default(now())
+  processingStartedAt DateTime?
+  readyAt             DateTime?
+  updatedAt           DateTime       @updatedAt
+
+  room       Room            @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomPlayer RoomPlayer      @relation(fields: [roomPlayerId], references: [id], onDelete: Cascade)
+  tracks     PlaylistTrack[]
+
+  @@index([roomId, status])
+  @@index([status, processingStartedAt])
+}
+
+/// Playable songs of a playlist. Unplayable videos are never stored.
+model PlaylistTrack {
+  id             String              @id @default(uuid()) @db.Uuid
+  playlistId     String              @db.Uuid
+  roomId         String              @db.Uuid
+  youtubeVideoId String              @db.VarChar(16)
+  title          String              @db.VarChar(200)
+  artist         String?             @db.VarChar(200)
+  thumbnailUrl   String?             @db.VarChar(512)
+  durationSec    Int
+  position       Int
+  status         PlaylistTrackStatus
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  room     Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, youtubeVideoId])
+  @@index([roomId, youtubeVideoId])
 }

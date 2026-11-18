@@ -65,4 +65,15 @@ describe('validateEnv', () => {
       validateEnv({ ...valid, PRESENCE_GRACE_MS: '1000', PRESENCE_DEBOUNCE_MS: '1000' }),
     ).toThrow(/PRESENCE_DEBOUNCE_MS/);
   });
+
+  it('treats an empty YouTube key as unset, but requires one in production', () => {
+    expect(validateEnv({ ...valid, YOUTUBE_API_KEY: '' }).YOUTUBE_API_KEY).toBeUndefined();
+    expect(
+      validateEnv({ ...valid, YOUTUBE_DAILY_QUOTA_UNITS: '500' }).YOUTUBE_DAILY_QUOTA_UNITS,
+    ).toBe(500);
+    expect(() => validateEnv({ ...valid, NODE_ENV: 'production' })).toThrow(/YOUTUBE_API_KEY/);
+    expect(() => validateEnv({ ...valid, YOUTUBE_REGION_CODE: 'india' })).toThrow(
+      /YOUTUBE_REGION_CODE/,
+    );
+  });
 });

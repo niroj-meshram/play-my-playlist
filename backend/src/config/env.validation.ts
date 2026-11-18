@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsOptional,
   IsString,
   Matches,
   Max,
@@ -88,6 +89,26 @@ export class EnvironmentVariables {
   @Max(10_000)
   GRACE_SWEEP_INTERVAL_MS: number = 1_000;
 
+  /** YouTube Data API v3 key. Required in production; without it, playlist submissions fail. */
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
+  @IsOptional()
+  @IsString()
+  @MinLength(20)
+  YOUTUBE_API_KEY?: string;
+
+  /** Daily quota of the key (YouTube resets it at midnight Pacific time). */
+  @Type(() => Number)
+  @IsInt()
+  @Min(100)
+  @Max(10_000_000)
+  YOUTUBE_DAILY_QUOTA_UNITS: number = 10_000;
+
+  /** Optional ISO 3166-1 country: videos blocked there are treated as unplayable. */
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : value))
+  @IsOptional()
+  @Matches(/^[A-Z]{2}$/, { message: 'YOUTUBE_REGION_CODE must be a two-letter country code' })
+  YOUTUBE_REGION_CODE?: string;
+
   /** Rate limiting can only be disabled outside production (used by e2e tests). */
   @Transform(({ value }) => (typeof value === 'string' ? value.toLowerCase() === 'true' : value))
   @IsBoolean()
@@ -110,6 +131,10 @@ export function validateEnv(raw: Record<string, unknown>): EnvironmentVariables 
     throw new Error(
       'Invalid environment configuration: THROTTLE_ENABLED cannot be false in production',
     );
+  }
+
+  if (env.NODE_ENV === 'production' && !env.YOUTUBE_API_KEY) {
+    throw new Error('Invalid environment configuration: YOUTUBE_API_KEY is required in production');
   }
 
   if (env.PRESENCE_DEBOUNCE_MS >= env.PRESENCE_GRACE_MS) {

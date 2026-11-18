@@ -4,6 +4,7 @@ import {
   applyHostChanged,
   applyPlayerJoined,
   applyPlayerLeft,
+  applyPlaylistReady,
   applyPresence,
   applySettings,
 } from './room-events';
@@ -20,6 +21,7 @@ function player(
     isHost: false,
     joinedAt,
     presence: 'ONLINE',
+    playlistReady: false,
     ...overrides,
   };
 }
@@ -74,5 +76,14 @@ describe('room event reducers', () => {
       maxPlayers: 8,
       roundCount: 12,
     });
+  });
+
+  it('marks only that player as having a ready playlist', () => {
+    const after = applyPlaylistReady(room, { playerId: 'a', ready: true });
+
+    expect(after.players.map((p) => p.playlistReady)).toEqual([true, false]);
+    expect(
+      applyPlaylistReady(after, { playerId: 'a', ready: false }).players[0]!.playlistReady,
+    ).toBe(false);
   });
 });

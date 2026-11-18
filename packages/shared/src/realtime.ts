@@ -1,4 +1,5 @@
 import type { ErrorCode } from './errors.js';
+import type { MyPlaylistStatusEvent, PlaylistSubmissionUpdatedEvent } from './playlists.js';
 import type { RoomPlayerDto, RoomSettingsDto, RoomSnapshotDto } from './rooms.js';
 
 /** Socket.IO namespace for all room and game traffic. */
@@ -79,6 +80,9 @@ export interface ServerToClientEvents {
   'room:presence': (event: PresenceChangedEvent) => void;
   'room:host-changed': (event: HostChangedEvent) => void;
   'room:settings-updated': (event: SettingsUpdatedEvent) => void;
+  'playlist:submission-updated': (event: PlaylistSubmissionUpdatedEvent) => void;
+  /** Sent to the owner's private channel only. */
+  'playlist:my-status': (event: MyPlaylistStatusEvent) => void;
   /** This connection was replaced by a newer tab or device of the same player. */
   'session:replaced': () => void;
 }

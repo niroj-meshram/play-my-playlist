@@ -2,6 +2,7 @@ import type {
   HostChangedEvent,
   PlayerJoinedEvent,
   PlayerLeftEvent,
+  PlaylistSubmissionUpdatedEvent,
   PresenceChangedEvent,
   RoomSnapshotDto,
   SettingsUpdatedEvent,
@@ -57,4 +58,14 @@ export function applySettings(
   { settings }: SettingsUpdatedEvent,
 ): RoomSnapshotDto {
   return { ...room, settings };
+}
+
+export function applyPlaylistReady(
+  room: RoomSnapshotDto,
+  { playerId, ready }: PlaylistSubmissionUpdatedEvent,
+): RoomSnapshotDto {
+  return {
+    ...room,
+    players: room.players.map((p) => (p.id === playerId ? { ...p, playlistReady: ready } : p)),
+  };
 }

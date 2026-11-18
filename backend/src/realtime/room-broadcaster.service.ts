@@ -27,6 +27,15 @@ export class RoomBroadcaster {
     this.withNamespace((ns) => ns.to(roomChannel(roomId)).emit(event, ...args));
   }
 
+  /** Private events for one player (all of their sockets in this room). */
+  toPlayer<E extends keyof ServerToClientEvents>(
+    playerId: string,
+    event: E,
+    ...args: EventArgs<E>
+  ): void {
+    this.withNamespace((ns) => ns.to(playerChannel(playerId)).emit(event, ...args));
+  }
+
   /** Tells an older connection of a player that a newer tab took over, then closes it. */
   replaceSession(socketId: string): void {
     this.withNamespace((ns) => {

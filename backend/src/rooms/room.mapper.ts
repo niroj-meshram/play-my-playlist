@@ -18,7 +18,14 @@ export interface RoomWithActivePlayers {
   maxPlayers: number;
   roundCount: number;
   hostPlayerId: string | null;
-  players: { id: string; userId: string; displayName: string; avatarId: string; joinedAt: Date }[];
+  players: {
+    id: string;
+    userId: string;
+    displayName: string;
+    avatarId: string;
+    joinedAt: Date;
+    playlist: { status: string } | null;
+  }[];
 }
 
 export const ROOM_SNAPSHOT_SELECT = {
@@ -32,7 +39,15 @@ export const ROOM_SNAPSHOT_SELECT = {
   players: {
     where: { status: 'ACTIVE' },
     orderBy: [{ joinedAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, userId: true, displayName: true, avatarId: true, joinedAt: true },
+    select: {
+      id: true,
+      userId: true,
+      displayName: true,
+      avatarId: true,
+      joinedAt: true,
+      // Privacy: only the status of a submission is ever read on this public path.
+      playlist: { select: { status: true } },
+    },
   },
 } satisfies Prisma.RoomSelect;
 
@@ -54,6 +69,7 @@ export function toRoomSnapshotDto(
       isHost: p.id === room.hostPlayerId,
       joinedAt: p.joinedAt.toISOString(),
       presence: presence.get(p.id) ?? PlayerPresence.AWAY,
+      playlistReady: p.playlist?.status === 'READY',
     })),
     viewerPlayerId,
   };
