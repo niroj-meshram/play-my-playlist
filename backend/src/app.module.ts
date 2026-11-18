@@ -9,6 +9,7 @@ import { RATE_LIMITS } from './common/throttling/rate-limits.js';
 import { RedisThrottlerStorage } from './common/throttling/redis-throttler.storage.js';
 import { validateEnv, type EnvironmentVariables } from './config/env.validation.js';
 import { HealthModule } from './health/health.module.js';
+import { PlaylistsModule } from './playlists/playlists.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { REDIS_CLIENT } from './redis/redis.constants.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
@@ -36,6 +37,7 @@ import { UsersModule } from './users/users.module.js';
     AuthModule,
     UsersModule,
     RoomsModule,
+    PlaylistsModule,
     RealtimeModule,
     SchedulerModule,
     HealthModule,

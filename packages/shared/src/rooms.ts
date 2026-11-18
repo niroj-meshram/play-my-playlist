@@ -48,6 +48,8 @@ export interface RoomPlayerDto {
   isHost: boolean;
   joinedAt: string;
   presence: PlayerPresence;
+  /** Whether the player has a READY playlist. Nothing else about it is public. */
+  playlistReady: boolean;
 }
 
 /** Full lobby state, visible to active members only. Contains no private game data. */

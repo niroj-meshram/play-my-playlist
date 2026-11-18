@@ -10,4 +10,5 @@ export const RATE_LIMITS = {
   createRoom: { limit: 10, ttl: MINUTE_MS },
   previewRoom: { limit: 30, ttl: MINUTE_MS },
   joinRoom: { limit: 20, ttl: MINUTE_MS },
+  submitPlaylist: { limit: 6, ttl: MINUTE_MS },
 } as const satisfies Record<string, Pick<ThrottlerOptions, 'limit' | 'ttl'>>;

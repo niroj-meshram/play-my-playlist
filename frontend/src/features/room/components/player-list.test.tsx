@@ -11,6 +11,7 @@ const players: RoomPlayerDto[] = [
     isHost: true,
     joinedAt: '2026-01-01T00:00:00Z',
     presence: 'ONLINE',
+    playlistReady: true,
   },
   {
     id: 'p2',
@@ -19,6 +20,7 @@ const players: RoomPlayerDto[] = [
     isHost: false,
     joinedAt: '2026-01-01T00:01:00Z',
     presence: 'RECONNECTING',
+    playlistReady: false,
   },
   {
     id: 'p3',
@@ -27,6 +29,7 @@ const players: RoomPlayerDto[] = [
     isHost: false,
     joinedAt: '2026-01-01T00:02:00Z',
     presence: 'AWAY',
+    playlistReady: false,
   },
 ];
 
@@ -41,6 +44,8 @@ describe('PlayerList', () => {
     expect(within(items[0]!).getByText('Alice')).toBeInTheDocument();
     expect(within(items[0]!).getByText('Host')).toBeInTheDocument();
     expect(within(items[0]!).getByText('Online')).toBeInTheDocument();
+    expect(within(items[0]!).getByText('✓ Playlist ready')).toBeInTheDocument();
+    expect(within(items[1]!).getByText('No playlist yet')).toBeInTheDocument();
 
     expect(within(items[1]!).getByText('(you)')).toBeInTheDocument();
     expect(within(items[1]!).getByText('Reconnecting…')).toBeInTheDocument();

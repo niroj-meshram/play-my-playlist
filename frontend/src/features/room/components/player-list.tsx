@@ -50,6 +50,12 @@ export function PlayerList({ players, viewerPlayerId, maxPlayers }: PlayerListPr
                   className={cn('size-2 rounded-full', PRESENCE_DOT[player.presence])}
                 />
                 {PRESENCE_LABEL[player.presence]}
+                <span aria-hidden="true">·</span>
+                {player.playlistReady ? (
+                  <span className="text-emerald-500">✓ Playlist ready</span>
+                ) : (
+                  <span>No playlist yet</span>
+                )}
               </span>
             </div>
             {player.isHost && <Badge variant="secondary">Host</Badge>}

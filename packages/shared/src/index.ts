@@ -3,5 +3,6 @@ export * from './errors.js';
 export * from './game-phase.js';
 export * from './game-rules.js';
 export * from './health.js';
+export * from './playlists.js';
 export * from './realtime.js';
 export * from './rooms.js';

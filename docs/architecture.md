@@ -1,6 +1,6 @@
 # Play My Playlist — Architecture
 
-Status: **Approved — M0–M2 done (M2 includes a minimal lobby UI pulled forward from M6); next: M3**
+Status: **Approved — M0–M3 done (M2 includes a minimal lobby UI pulled forward from M6); next: M4**
 Last updated: 2026-11-17
 
 This document is the source of truth for architecture and game rules.
@@ -118,8 +118,8 @@ erDiagram
   AuthSession { uuid id PK; uuid userId FK; string refreshTokenHash UK; string previousTokenHash; ts rotatedAt; ts expiresAt; ts revokedAt }
   Room { uuid id PK; string code UK; uuid hostPlayerId FK "nullable, UK"; enum status "LOBBY|IN_GAME|CLOSED"; enum visibility "INVITE_ONLY"; int maxPlayers; int roundCount; ts lastActivityAt }
   RoomPlayer { uuid id PK; uuid roomId FK; uuid userId FK; string displayName; string avatarId; enum status "ACTIVE|LEFT"; ts joinedAt; ts leftAt }
-  Playlist { uuid id PK; uuid roomPlayerId FK "UK = owner"; uuid roomId FK; string youtubePlaylistId; string sourceUrl "PRIVATE"; string title "PRIVATE"; enum status "PROCESSING|READY|REJECTED"; string rejectionCode; int playableCount; int duplicateCount; ts submittedAt }
-  PlaylistTrack { uuid id PK; uuid playlistId FK; uuid roomId FK "denormalised"; string youtubeVideoId; string title; string artist; string thumbnailUrl; int durationSec; int position; enum status "PLAYABLE|DUPLICATE|UNPLAYABLE" }
+  Playlist { uuid id PK; uuid roomPlayerId FK "UK = owner"; uuid roomId FK; string youtubePlaylistId; string sourceUrl "PRIVATE"; string title "PRIVATE"; enum status "PROCESSING|READY|REJECTED"; string rejectionCode; int playableCount; int duplicateCount; uuid submissionId; int attempts; ts submittedAt; ts processingStartedAt; ts readyAt }
+  PlaylistTrack { uuid id PK; uuid playlistId FK; uuid roomId FK "denormalised"; string youtubeVideoId; string title; string artist; string thumbnailUrl; int durationSec; int position; enum status "PLAYABLE|DUPLICATE" }
   Game { uuid id PK; uuid roomId FK; int gameNumber; enum phase; int currentRound; int totalRounds; int stateVersion; ts phaseStartedAt; json settingsSnapshot; ts startedAt; ts finishedAt; enum endReason }
   GameParticipant { uuid id PK; uuid gameId FK; uuid roomPlayerId FK; int totalScore; int correctGuesses; int ownerPoints }
   GamePlaylist { uuid id PK; uuid gameId FK; uuid playlistId FK; string publicLabel }
@@ -245,16 +245,24 @@ Final ranking (ties share a rank), most correct guesses, and best bluffer (most 
 
 ## 7. Playlist ingestion & duplicate songs
 
-1. Parse the URL (`youtube.com/playlist?list=`, `music.youtube.com`, `youtu.be/...&list=`). Reject `LL` (Liked videos), `WL` (Watch Later) and `RD…` (mixes) early with a specific error.
-2. `playlists.list` gets metadata. `playlistItems.list` is paginated (50 per page, capped at about 200 items).
-3. `videos.list` (batches of 50) filters out videos that aren't embeddable, are private, deleted or age-restricted.
-4. **Duplicate songs (D6):** inside a transaction guarded by a per-room advisory lock (`pg_advisory_xact_lock`), any video already present in an **earlier-submitted** playlist in the room is marked `DUPLICATE`.
-   - Earlier submissions never lose songs, so only the newly submitted playlist can be affected.
-   - Replacing a playlist gives it a new `submittedAt`.
-5. If fewer than `minPlayableTracks` (default 5) `PLAYABLE` songs remain, the submission is `REJECTED` (`NOT_ENOUGH_UNIQUE_SONGS`).
-6. The submitter is told **how many** songs were dropped as duplicates, not which ones. This limits probing of other players' playlists.
+1. Parse the URL (`youtube.com/playlist?list=` incl. `www.`/`m.`/`music.`, `watch?v=…&list=`, `youtu.be/…?list=`, or a bare ID). Reject `LL`/`LM` (Liked), `WL` (Watch Later) and `RD…` (generated mixes; YouTube Music's curated `RDCLAK5uy_…` playlists are allowed because the Data API serves them) early with a specific error (`UNSUPPORTED_PLAYLIST`); anything else malformed is `INVALID_PLAYLIST_URL`. Both are synchronous 400s.
+2. `PUT` stores the submission as `PROCESSING` with a new `submissionId` (old tracks deleted) and returns 202. Processing runs in the background.
+3. `playlists.list` gets metadata (empty → `PLAYLIST_NOT_FOUND`, covering private and deleted playlists). `playlistItems.list` is paginated (50 per page, capped at **200** items).
+4. `videos.list` (batches of 50) keeps only public/unlisted, processed, embeddable, non-age-restricted, non-live videos with a duration; videos missing from the response (deleted/private) are dropped. With `YOUTUBE_REGION_CODE` set, region-blocked videos are dropped too. Unplayable videos are not stored.
+5. Fewer than `minPlayableTracks` (default 5) playable songs → `REJECTED` (`NOT_ENOUGH_PLAYABLE_SONGS`).
+6. **Duplicate songs (D6):** the result is committed in a transaction guarded by a per-room advisory lock (`pg_advisory_xact_lock`). Any song already `PLAYABLE` in another **READY** playlist of the room is marked `DUPLICATE`.
+   - A READY playlist never loses songs; only the submission that finishes processing later is affected. (With background processing, "finished first" is the order every instance agrees on, rather than submission time.)
+   - Under the lock, the row is re-checked: if its `submissionId` changed (replaced) or it was deleted, the result is discarded.
+7. If fewer than `minPlayableTracks` unique songs remain, the submission is `REJECTED` (`NOT_ENOUGH_UNIQUE_SONGS`).
+8. The submitter is told **how many** songs were dropped as duplicates, not which ones. This limits probing of other players' playlists.
 
-The playlist ID is cached in Redis to save quota. The cache never assumes a video is still playable.
+**Jobs and recovery.** Jobs run in an in-process queue (4 at a time per instance). A sweep every 30 s claims `PROCESSING` rows older than 2 minutes with a compare-and-set on `processingStartedAt` (one instance wins) and re-runs them; after 3 attempts the row becomes `REJECTED` (`YOUTUBE_UNAVAILABLE`). Expected YouTube failures (`PLAYLIST_NOT_FOUND`, `QUOTA_EXHAUSTED`, `YOUTUBE_UNAVAILABLE` after one retry) reject immediately.
+
+**Quota.** Every Data API call costs 1 unit and is counted in Redis per Pacific-time day (YouTube's reset). `PUT` returns 503 `QUOTA_EXHAUSTED` when fewer than 9 units remain (a worst-case submission) unless the playlist is cached; a real `quotaExceeded` from YouTube closes the day. Budget: `YOUTUBE_DAILY_QUOTA_UNITS` (default 10,000).
+
+**Cache.** The fetched, filtered playlist is cached in Redis for 1 hour per playlist ID to save quota on retries and replacements. The cache never assumes a video is still playable: playback errors are handled in the game (M4).
+
+**Leaving** the room deletes the player's playlist in the same transaction.
 
 ---
 
@@ -272,9 +280,9 @@ The playlist ID is cached in Redis to save quota. The cache never assumes a vide
 | `POST /rooms/:code/leave` | member | LOBBY only until M4. A departing host is replaced by the longest-present player; the room closes when empty. |
 | `GET /rooms/:code` | member | `RoomSnapshotDto` (same payload as socket `room:state`) |
 | `PATCH /rooms/:code/settings` | host, LOBBY | |
-| `PUT /rooms/:code/playlist` `{url}` | member, LOBBY | 202 `{status: PROCESSING}`. The result arrives via socket. |
-| `GET /rooms/:code/playlist` | member | **Own** submission only |
-| `DELETE /rooms/:code/playlist` | member, LOBBY | |
+| `PUT /rooms/:code/playlist` `{url}` | member, LOBBY | 202 `{status: PROCESSING}`. The result arrives via socket. 400 `INVALID_PLAYLIST_URL` / `UNSUPPORTED_PLAYLIST`; 503 `QUOTA_EXHAUSTED` / `YOUTUBE_UNAVAILABLE` (no key configured). Rate-limited (6/min). |
+| `GET /rooms/:code/playlist` | member | **Own** submission only: `{playlist: MyPlaylistDto \| null}` |
+| `DELETE /rooms/:code/playlist` | member, LOBBY | 204 |
 | `GET /rooms/:code/game` | member | Current `GameSnapshotDto` (public state + viewer context + live scoreboard) |
 | `GET /games/:id/results` | participant, FINISHED | Round history, reveals, ranking, awards |
 | `GET /health`, `GET /health/ready` | — | Liveness, plus readiness checks for PostgreSQL and Redis |
@@ -313,8 +321,8 @@ Error envelope: `{ error: { code, message, details? }, requestId }`. Error codes
 | `room:presence` | room | `{playerId, presence: 'ONLINE'\|'RECONNECTING'\|'AWAY'}`. Disconnects shorter than the ~5 s debounce are never broadcast. RECONNECTING = inside the 30 s grace (still counts as online for voting, D5); AWAY = past it. |
 | `room:host-changed` | room | `{hostPlayerId}`. The new host's device becomes the speaker. |
 | `room:settings-updated` | room | |
-| `playlist:submission-updated` | room | `{playerId, ready}` only |
-| `playlist:my-status` | **player** | `{status, title, playableCount, duplicateCount, rejectionCode}` |
+| `playlist:submission-updated` | room | `{playerId, ready}` only, and only when `ready` changes. Snapshots carry the same flag as `RoomPlayerDto.playlistReady`. |
+| `playlist:my-status` | **player** | `{playlist: {status, sourceUrl, title, playableCount, duplicateCount, rejectionCode, submittedAt} \| null}` (`null` after removal) |
 | `game:started` | room | `{gameId, totalRounds, participants, playlistLabels}` |
 | `game:phase-changed` | room | `{phase, roundNumber, phaseStartedAt}` |
 | `game:round-started` | room | `{roundNumber, playlistLabel, track:{videoId,title,artist,thumbnailUrl}}` |

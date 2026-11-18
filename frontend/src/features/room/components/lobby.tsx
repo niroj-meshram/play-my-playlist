@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { PlaylistCard } from '../../playlist/components/playlist-card';
 import { useRoomConnection } from '../hooks/use-room-connection';
 import { roomApi } from '../room-api';
 import { useRoomStore } from '../room-store';
@@ -36,8 +37,9 @@ export function Lobby({ roomCode }: { roomCode: string }) {
         <Card>
           <InviteLink roomCode={snapshot.code} />
           <p className="text-sm text-muted-foreground">
-            Waiting in the lobby. Playlist submission and game start arrive in the next milestones.
+            Everyone submits a YouTube playlist. Starting the game arrives in the next milestone.
           </p>
+          <PlaylistCard roomCode={snapshot.code} />
           <PlayerList
             players={snapshot.players}
             viewerPlayerId={snapshot.viewerPlayerId}

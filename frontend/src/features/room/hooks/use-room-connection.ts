@@ -1,13 +1,16 @@
 'use client';
 
 import { ErrorCode } from '@pmp/shared';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { createGameSocket, emitWithAck, type GameSocket } from '@/lib/socket-client';
+import { myPlaylistKey } from '../../playlist/playlist-api';
 import { getFreshToken } from '../../session/session-api';
 import {
   applyHostChanged,
   applyPlayerJoined,
   applyPlayerLeft,
+  applyPlaylistReady,
   applyPresence,
   applySettings,
 } from '../room-events';
@@ -27,6 +30,7 @@ interface RoomConnection {
  * replaces local state with the server snapshot; live events are applied as patches.
  */
 export function useRoomConnection(roomCode: string, onNotMember: () => void): RoomConnection {
+  const queryClient = useQueryClient();
   const socketRef = useRef<GameSocket | null>(null);
   const onNotMemberRef = useRef(onNotMember);
   useEffect(() => {
@@ -46,6 +50,8 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
       if (ack.ok) {
         useRoomStore.getState().setSnapshot(ack.data);
         useRoomStore.getState().setConnection('connected');
+        // Events may have been missed while disconnected.
+        void queryClient.invalidateQueries({ queryKey: myPlaylistKey(roomCode) });
       } else if (ack.error.code === ErrorCode.ROOM_NOT_FOUND) {
         socket.disconnect();
         onNotMemberRef.current();
@@ -58,6 +64,7 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
       if (!socket.connected || document.visibilityState !== 'visible') return;
       const ack = await emitWithAck(socket, 'sync:request', {});
       if (ack.ok) useRoomStore.getState().setSnapshot(ack.data);
+      void queryClient.invalidateQueries({ queryKey: myPlaylistKey(roomCode) });
     };
 
     socket.on('connect', () => {
@@ -87,6 +94,11 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
     socket.on('room:presence', (e) => patch((r) => applyPresence(r, e)));
     socket.on('room:host-changed', (e) => patch((r) => applyHostChanged(r, e)));
     socket.on('room:settings-updated', (e) => patch((r) => applySettings(r, e)));
+    socket.on('playlist:submission-updated', (e) => patch((r) => applyPlaylistReady(r, e)));
+    // The viewer's own submission is server state owned by TanStack Query.
+    socket.on('playlist:my-status', (e) =>
+      queryClient.setQueryData(myPlaylistKey(roomCode), { playlist: e.playlist }),
+    );
 
     document.addEventListener('visibilitychange', resync);
     socket.connect();
@@ -98,7 +110,7 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [roomCode]);
+  }, [roomCode, queryClient]);
 
   return {
     reclaim: () => {

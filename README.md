@@ -40,6 +40,10 @@ pnpm --filter @pmp/frontend exec next dev -p 3100
 
 Optional presence timers (`PRESENCE_GRACE_MS`, `PRESENCE_DEBOUNCE_MS`, `GRACE_SWEEP_INTERVAL_MS`) are documented in `backend/.env.example`.
 
+### YouTube API key
+
+Playlist submissions call the YouTube Data API v3. In [Google Cloud Console](https://console.cloud.google.com/), create a project, enable **YouTube Data API v3**, create an **API key** (restrict it to that API), and set `YOUTUBE_API_KEY` in `backend/.env`. The free quota is 10,000 units/day; one 200-song playlist costs about 9. Automated tests use a fake YouTube client and never need the key.
+
 ## Quality checks
 
 ```bash
