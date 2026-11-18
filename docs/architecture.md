@@ -280,7 +280,7 @@ Final ranking (ties share a rank), most correct guesses, and best bluffer (most 
 | `POST /rooms/:code/leave` | member | LOBBY only until M4. A departing host is replaced by the longest-present player; the room closes when empty. |
 | `GET /rooms/:code` | member | `RoomSnapshotDto` (same payload as socket `room:state`) |
 | `PATCH /rooms/:code/settings` | host, LOBBY | |
-| `PUT /rooms/:code/playlist` `{url}` | member, LOBBY | 202 `{status: PROCESSING}`. The result arrives via socket. 400 `INVALID_PLAYLIST_URL` / `UNSUPPORTED_PLAYLIST`; 503 `QUOTA_EXHAUSTED` / `YOUTUBE_UNAVAILABLE` (no key configured). Rate-limited (6/min). |
+| `PUT /rooms/:code/playlist` `{url}` | member, LOBBY | 202 `{status: PROCESSING}`. The result arrives via socket. 400 `INVALID_PLAYLIST_URL` / `UNSUPPORTED_PLAYLIST`; 503 `QUOTA_EXHAUSTED` / `YOUTUBE_UNAVAILABLE` (no key configured). Rate-limited to 6/min per player (players at a party often share one IP), with a 30/min per-IP ceiling. |
 | `GET /rooms/:code/playlist` | member | **Own** submission only: `{playlist: MyPlaylistDto \| null}` |
 | `DELETE /rooms/:code/playlist` | member, LOBBY | 204 |
 | `GET /rooms/:code/game` | member | Current `GameSnapshotDto` (public state + viewer context + live scoreboard) |
