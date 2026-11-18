@@ -2,7 +2,7 @@ import type { CookieOptions } from 'express';
 
 export const REFRESH_COOKIE = 'pmp_refresh';
 
-/** Scoped to the auth routes so the refresh token is never sent anywhere else. */
+/** Scoped to the auth routes so the refresh token is never sent anywhere else if. */
 export function refreshCookieOptions(secure: boolean, maxAgeMs?: number): CookieOptions {
   return {
     httpOnly: true,
