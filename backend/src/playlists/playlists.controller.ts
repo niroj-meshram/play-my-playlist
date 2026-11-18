@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { GetMyPlaylistResponse, SubmitPlaylistResponse } from '@pmp/shared';
 import type { AuthContext } from '../common/auth/auth-context.js';
 import { CurrentAuth } from '../common/auth/current-auth.decorator.js';
+import { PlayerRateLimit } from '../common/throttling/player-rate-limit.guard.js';
 import { RATE_LIMITS } from '../common/throttling/rate-limits.js';
 import { ParseRoomCodePipe } from '../rooms/room-code.pipe.js';
 import { SubmitPlaylistDto } from './dto/submit-playlist.dto.js';
@@ -16,6 +17,7 @@ export class PlaylistsController {
   @Put()
   @HttpCode(HttpStatus.ACCEPTED)
   @Throttle({ default: RATE_LIMITS.submitPlaylist })
+  @PlayerRateLimit('submitPlaylist')
   submit(
     @Param('code', ParseRoomCodePipe) code: string,
     @CurrentAuth() auth: AuthContext,
