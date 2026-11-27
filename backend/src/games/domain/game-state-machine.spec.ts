@@ -11,6 +11,8 @@ describe('nextPhase', () => {
     ['PLAYING', 'PLAYBACK_ENDED', mid, 'DISCUSSION'],
     ['DISCUSSION', 'ADVANCE', mid, 'VOTING'],
     ['VOTING', 'ADVANCE', mid, 'REVEAL'],
+    ['VOTING', 'VOTING_COMPLETE', mid, 'REVEAL'],
+    ['VOTING', 'VOTING_COMPLETE', last, 'REVEAL'],
     ['REVEAL', 'ADVANCE', mid, 'PLAYING'],
     ['REVEAL', 'ADVANCE', last, 'SCOREBOARD'],
     ['SCOREBOARD', 'ADVANCE', last, 'FINISHED'],
@@ -30,6 +32,10 @@ describe('nextPhase', () => {
     ['VOTING', 'PLAYBACK_ENDED'],
     ['REVEAL', 'PLAYBACK_ENDED'],
     ['SCOREBOARD', 'PLAYBACK_ENDED'],
+    ['PLAYING', 'VOTING_COMPLETE'],
+    ['DISCUSSION', 'VOTING_COMPLETE'],
+    ['REVEAL', 'VOTING_COMPLETE'],
+    ['SCOREBOARD', 'VOTING_COMPLETE'],
   ])('rejects %s + %s', (phase, trigger) => {
     expect(nextPhase(phase, trigger, mid)).toBeNull();
   });

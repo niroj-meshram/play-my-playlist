@@ -153,6 +153,18 @@ describe('Game engine (e2e)', () => {
 
   const errorCode = (ack: WsAck<unknown>) => (ack.ok ? null : ack.error.code);
 
+  const vote = (
+    m: Member,
+    roundNumber: number,
+    suspect: Member | string,
+    clientRequestId = randomUUID(),
+  ) =>
+    emitAck(m.socket, 'vote:submit', {
+      roundNumber,
+      suspectPlayerId: typeof suspect === 'string' ? suspect : suspect.playerId,
+      clientRequestId,
+    });
+
   describe('starting', () => {
     it('requires the host, three players and ready playlists', async () => {
       const two = await lobby(2);
@@ -455,17 +467,36 @@ describe('Game engine (e2e)', () => {
 
     for (let round = 1; round <= 3; round += 1) {
       const owner = await ownerOf(l.roomId, round);
+      const myVotes = new Map<string, string>();
       for (const phase of ['PLAYING', 'DISCUSSION', 'VOTING'] as const) {
-        for (const m of l.members) {
-          // No game event and no game snapshot mentions any player before the reveal.
-          const gameEvents = JSON.stringify(m.events.filter((e) => e.event.startsWith('game:')));
-          playerIds.forEach((id) => expect(gameEvents).not.toContain(id));
-          const snapshot = okData(await emitAck(m.socket, 'sync:request', {})).game!;
-          const visible = JSON.stringify(snapshot);
-          playerIds.forEach((id) => expect(visible).not.toContain(id));
-          expect(visible).not.toContain('Secret title');
-          expect(snapshot.viewer.isYourPlaylist).toBe(m.playerId === owner);
+        if (phase === 'VOTING') {
+          // Two votes are cast; voting stays open, so individual votes must stay private.
+          for (const [i, m] of l.members.slice(0, 2).entries()) {
+            const suspect = l.members[i + 1] as Member;
+            okData(await vote(m, round, suspect));
+            myVotes.set(m.playerId, suspect.playerId);
+          }
         }
+        const shared = new Set<string>();
+        for (const m of l.members) {
+          // Public game and vote events name no player before the reveal.
+          const publicEvents = JSON.stringify(
+            m.events.filter((e) => /^(game|vote):/.test(e.event)),
+          );
+          playerIds.forEach((id) => expect(publicEvents).not.toContain(id));
+
+          const snapshot = okData(await emitAck(m.socket, 'sync:request', {})).game!;
+          expect(JSON.stringify(snapshot)).not.toContain('Secret title');
+          const { viewer, serverTime: _time, ...rest } = snapshot;
+          shared.add(JSON.stringify(rest));
+          expect(viewer.isYourPlaylist).toBe(m.playerId === owner);
+          expect(viewer.candidates.map((c) => c.playerId).sort()).toEqual(
+            playerIds.filter((id) => id !== m.playerId).sort(),
+          );
+          expect(viewer.myVote).toBe(myVotes.get(m.playerId) ?? null);
+        }
+        // Apart from the viewer's own context, owner and non-owners see exactly the same.
+        expect(shared.size).toBe(1);
         okData(await advance(l.host, phase, round));
       }
       // VOTING → REVEAL happened on the last advance; the reveal names the owner.
@@ -492,5 +523,305 @@ describe('Game engine (e2e)', () => {
       }
     }
     expect(yours.sort((a, b) => a - b)).toEqual([2, 3, 4]);
+  });
+
+  describe('voting and scoring', () => {
+    const leave = (m: Member, code: string) =>
+      api()
+        .post(`/api/v1/rooms/${code}/leave`)
+        .set(...bearer(m.guest))
+        .expect(204);
+
+    /** Starts a game and moves it to VOTING in round 1. Returns the round's owner. */
+    async function toVoting(l: Lobby): Promise<{ owner: Member; others: Member[] }> {
+      await startGame(l);
+      await step(l);
+      await step(l);
+      return roles(l, 1);
+    }
+
+    async function roles(l: Lobby, round: number): Promise<{ owner: Member; others: Member[] }> {
+      const ownerId = await ownerOf(l.roomId, round);
+      const owner = l.members.find((m) => m.playerId === ownerId) as Member;
+      return { owner, others: l.members.filter((m) => m !== owner) };
+    }
+
+    const sync = async (m: Member) => okData(await emitAck(m.socket, 'sync:request', {})).game!;
+
+    it('validates every vote on the server and keeps it final', async () => {
+      const l = await lobby(4);
+      await startGame(l);
+      expect(errorCode(await vote(l.members[1]!, 1, l.members[2]!))).toBe(ErrorCode.VOTING_CLOSED);
+      await step(l);
+      const opened = nextEvent(l.members[1]!.socket, 'vote:progress');
+      await step(l);
+      // Opening the vote announces how many players are expected to vote.
+      expect((await opened)[0]).toMatchObject({ roundNumber: 1, votesIn: 0, expected: 4 });
+      const { owner, others } = await roles(l, 1);
+      const [a, b] = others as [Member, Member];
+
+      expect(errorCode(await vote(a, 1, a))).toBe(ErrorCode.INVALID_SUSPECT);
+      expect(errorCode(await vote(a, 1, randomUUID()))).toBe(ErrorCode.INVALID_SUSPECT);
+      expect(errorCode(await vote(a, 2, owner))).toBe(ErrorCode.VOTING_CLOSED);
+
+      const progress = nextEvent(b.socket, 'vote:progress', (e) => e.votesIn === 1);
+      const id = randomUUID();
+      expect(okData(await vote(a, 1, owner, id))).toEqual({
+        roundNumber: 1,
+        suspectPlayerId: owner.playerId,
+      });
+      expect((await progress)[0]).toMatchObject({ roundNumber: 1, votesIn: 1, expected: 4 });
+
+      // A retry returns the original result; a different vote is refused.
+      expect(okData(await vote(a, 1, owner, id)).suspectPlayerId).toBe(owner.playerId);
+      expect(errorCode(await vote(a, 1, b))).toBe(ErrorCode.ALREADY_VOTED);
+
+      const votes = await t.prisma.vote.findMany();
+      expect(votes).toHaveLength(1);
+      expect(votes[0]!.isCorrect).toBeNull();
+      expect((await sync(a)).viewer.myVote).toBe(owner.playerId);
+      expect(await sync(b)).toMatchObject({
+        viewer: { myVote: null },
+        voteProgress: { votesIn: 1, expected: 4 },
+      });
+    });
+
+    it('accepts exactly one of many concurrent votes from the same player', async () => {
+      const l = await lobby(3);
+      const { owner, others } = await toVoting(l);
+      const voter = others[0] as Member;
+      const acks = await Promise.all(
+        [owner, others[1]!, owner, others[1]!, owner].map((s) => vote(voter, 1, s)),
+      );
+      expect(acks.filter((a) => a.ok)).toHaveLength(1);
+      expect(acks.filter((a) => errorCode(a) === ErrorCode.ALREADY_VOTED)).toHaveLength(4);
+      expect(await t.prisma.vote.count()).toBe(1);
+    });
+
+    it('closes voting once everyone voted, scores exactly once and reveals every vote', async () => {
+      const l = await lobby(4);
+      const { owner, others } = await toVoting(l);
+      const [a, b, c] = others as [Member, Member, Member];
+      const revealed = nextEvent(b.socket, 'game:round-revealed');
+
+      // Exactly one correct guess (a); the owner votes too.
+      const acks = await Promise.all([
+        vote(a, 1, owner),
+        vote(b, 1, a),
+        vote(c, 1, a),
+        vote(owner, 1, b),
+      ]);
+      acks.forEach((ack) => okData(ack));
+
+      const [{ reveal, scoreboard }] = await revealed;
+      expect(reveal).toMatchObject({ roundNumber: 1, ownerPlayerId: owner.playerId });
+      expect(reveal.votes).toHaveLength(4);
+      expect(reveal.votes.find((v) => v.voterPlayerId === a.playerId)).toEqual({
+        voterPlayerId: a.playerId,
+        suspectPlayerId: owner.playerId,
+        isCorrect: true,
+      });
+      expect(reveal.votes.filter((v) => v.isCorrect)).toHaveLength(1);
+      expect(reveal.points).toEqual([{ playerId: a.playerId, points: 10, reason: 'SOLE_CORRECT' }]);
+      expect(scoreboard[0]).toMatchObject({ playerId: a.playerId, rank: 1, totalScore: 10 });
+      expect(scoreboard.slice(1).map((e) => [e.rank, e.totalScore])).toEqual([
+        [2, 0],
+        [2, 0],
+        [2, 0],
+      ]);
+
+      const g = await game(l.roomId);
+      expect(g).toMatchObject({ phase: 'REVEAL', stateVersion: 4 });
+      expect(await t.prisma.roundScore.count()).toBe(1);
+      const scorer = await t.prisma.gameParticipant.findFirstOrThrow({
+        where: { roomPlayerId: a.playerId },
+      });
+      expect(scorer).toMatchObject({ totalScore: 10, correctGuesses: 1, ownerPoints: 0 });
+      expect(okData(await advance(l.host, 'VOTING', 1)).applied).toBe(false);
+    });
+
+    it('scores an unguessed owner and shared correct guesses', async () => {
+      const l = await lobby(4);
+      const one = await toVoting(l);
+      const [a, b, c] = one.others as [Member, Member, Member];
+      let revealed = nextEvent(a.socket, 'game:round-revealed');
+      await Promise.all([vote(a, 1, b), vote(b, 1, a), vote(c, 1, a), vote(one.owner, 1, a)]);
+      expect((await revealed)[0].reveal.points).toEqual([
+        { playerId: one.owner.playerId, points: 10, reason: 'OWNER_UNGUESSED' },
+      ]);
+
+      await step(l); // round 2
+      await step(l);
+      await step(l);
+      const two = await roles(l, 2);
+      const [d, e, f] = two.others as [Member, Member, Member];
+      revealed = nextEvent(d.socket, 'game:round-revealed');
+      await Promise.all([
+        vote(d, 2, two.owner),
+        vote(e, 2, two.owner),
+        vote(f, 2, d),
+        vote(two.owner, 2, d),
+      ]);
+      const points = (await revealed)[0].reveal.points;
+      expect(points).toHaveLength(2);
+      expect(points).toEqual(
+        expect.arrayContaining([
+          { playerId: d.playerId, points: 5, reason: 'SHARED_CORRECT' },
+          { playerId: e.playerId, points: 5, reason: 'SHARED_CORRECT' },
+        ]),
+      );
+
+      const board = (await sync(a)).scoreboard;
+      const total = (m: Member) => board.find((x) => x.playerId === m.playerId)?.totalScore;
+      const expected = new Map<string, number>();
+      expected.set(one.owner.playerId, 10);
+      for (const m of [d, e]) expected.set(m.playerId, (expected.get(m.playerId) ?? 0) + 5);
+      for (const m of l.members) expect(total(m)).toBe(expected.get(m.playerId) ?? 0);
+    });
+
+    it('gives an offline owner nothing and stops waiting for players who are away', async () => {
+      const l = await lobby(4);
+      const { owner, others } = await toVoting(l);
+      const [a, b, c] = others as [Member, Member, Member];
+      const away = nextEvent(
+        a.socket,
+        'room:presence',
+        (e) => e.playerId === owner.playerId && e.presence === 'AWAY',
+      );
+      owner.socket.close();
+      await away;
+
+      expect(errorCode(await vote(a, 1, owner))).toBe(ErrorCode.INVALID_SUSPECT);
+      const revealed = nextEvent(a.socket, 'game:round-revealed');
+      await Promise.all([vote(a, 1, b), vote(b, 1, c), vote(c, 1, a)]);
+      const [{ reveal }] = await revealed;
+      expect(reveal.points).toEqual([
+        { playerId: owner.playerId, points: 0, reason: 'OWNER_OFFLINE' },
+      ]);
+    });
+
+    it('waits again for a player who comes back during voting', async () => {
+      const l = await lobby(4);
+      await toVoting(l);
+      const returning = l.members[3] as Member;
+      const [x, y, z] = l.members.slice(0, 3) as [Member, Member, Member];
+      const away = nextEvent(
+        x.socket,
+        'room:presence',
+        (e) => e.playerId === returning.playerId && e.presence === 'AWAY',
+      );
+      returning.socket.close();
+      await away;
+
+      okData(await vote(x, 1, y));
+      okData(await vote(y, 1, x));
+      expect((await sync(x)).voteProgress).toEqual({ votesIn: 2, expected: 3 });
+
+      const progress = nextEvent(x.socket, 'vote:progress', (e) => e.expected === 4);
+      const socket = await connect(t.app, returning.guest.accessToken);
+      sockets.push(socket);
+      okData(await emitAck(socket, 'room:subscribe', { roomCode: l.code }));
+      expect((await progress)[0]).toMatchObject({ votesIn: 2, expected: 4 });
+
+      okData(await vote(z, 1, x));
+      expect((await game(l.roomId)).phase).toBe('VOTING');
+      const revealed = nextEvent(x.socket, 'game:round-revealed');
+      okData(
+        await emitAck(socket, 'vote:submit', {
+          roundNumber: 1,
+          suspectPlayerId: x.playerId,
+          clientRequestId: randomUUID(),
+        }),
+      );
+      expect((await revealed)[0].reveal.votes).toHaveLength(4);
+    });
+
+    it('lets the leader close voting with votes missing, which then count for nothing', async () => {
+      const l = await lobby(3);
+      const { owner, others } = await toVoting(l);
+      okData(await vote(others[0]!, 1, owner));
+      const revealed = nextEvent(others[1]!.socket, 'game:round-revealed');
+      expect(okData(await advance(l.host, 'VOTING', 1)).applied).toBe(true);
+      const [{ reveal }] = await revealed;
+      expect(reveal.votes).toHaveLength(1);
+      expect(reveal.points).toEqual([
+        { playerId: others[0]!.playerId, points: 10, reason: 'SOLE_CORRECT' },
+      ]);
+      expect(errorCode(await vote(others[1]!, 1, owner))).toBe(ErrorCode.VOTING_CLOSED);
+    });
+
+    it('completes voting when the last missing voter leaves the room', async () => {
+      const l = await lobby(4);
+      await toVoting(l);
+      const leaver = l.members[3] as Member;
+      const [x, y, z] = l.members.slice(0, 3) as [Member, Member, Member];
+      okData(await vote(x, 1, y));
+      okData(await vote(y, 1, z));
+      okData(await vote(z, 1, x));
+      expect((await game(l.roomId)).phase).toBe('VOTING');
+
+      const revealed = nextEvent(x.socket, 'game:round-revealed');
+      await leave(leaver, l.code);
+      const [{ reveal, scoreboard }] = await revealed;
+      expect(reveal.votes).toHaveLength(3);
+      expect(scoreboard.find((e) => e.playerId === leaver.playerId)?.hasLeft).toBe(true);
+    });
+
+    it('plays a full 5-player game with consistent scores, final results and a rematch', async () => {
+      const l = await lobby(5, { roundCount: 5 });
+      await startGame(l);
+      expect(
+        errorCode(await emitAck(l.host.socket, 'game:rematch', { clientRequestId: randomUUID() })),
+      ).toBe(ErrorCode.GAME_IN_PROGRESS);
+
+      for (let round = 1; round <= 5; round += 1) {
+        await step(l);
+        await step(l);
+        const revealed = nextEvent(l.host.socket, 'game:round-revealed');
+        // Everyone votes for the next player in line: some rounds have a correct guess.
+        const acks = await Promise.all(
+          l.members.map((m, i) => vote(m, round, l.members[(i + 1) % 5] as Member)),
+        );
+        acks.forEach((ack) => okData(ack));
+        await revealed;
+
+        // Every client sees the same scoreboard.
+        const boards = await Promise.all(l.members.map(async (m) => (await sync(m)).scoreboard));
+        boards.forEach((b) => expect(b).toEqual(boards[0]));
+        await step(l); // next song, or SCOREBOARD after the last round
+      }
+
+      // Totals always equal the sum of the per-round score rows.
+      const participants = await t.prisma.gameParticipant.findMany({
+        include: { roundScores: true },
+      });
+      for (const p of participants) {
+        expect(p.totalScore).toBe(p.roundScores.reduce((sum, r) => sum + r.points, 0));
+      }
+      expect(await t.prisma.roundScore.groupBy({ by: ['roundId'] })).toHaveLength(5);
+
+      const snapshot = await sync(l.members[1]!);
+      expect(snapshot.phase).toBe('SCOREBOARD');
+      expect(snapshot.results?.ranking).toEqual(snapshot.scoreboard);
+      const mostCorrect = Math.max(...participants.map((p) => p.correctGuesses));
+      expect(snapshot.results?.awards.topGuesser?.value ?? 0).toBe(mostCorrect);
+
+      expect(
+        errorCode(
+          await emitAck(l.members[1]!.socket, 'game:rematch', { clientRequestId: randomUUID() }),
+        ),
+      ).toBe(ErrorCode.NOT_ROOM_HOST);
+      const finished = nextEvent(l.members[2]!.socket, 'game:finished');
+      const started = nextEvent(l.members[2]!.socket, 'game:started');
+      const rematch = okData(
+        await emitAck(l.host.socket, 'game:rematch', { clientRequestId: randomUUID() }),
+      );
+      expect(rematch.game).toMatchObject({ gameNumber: 2, phase: 'PLAYING', roundNumber: 1 });
+      expect(rematch.game?.scoreboard.every((e) => e.totalScore === 0)).toBe(true);
+      expect((await finished)[0].results.ranking).toEqual(snapshot.scoreboard);
+      expect((await started)[0].gameNumber).toBe(2);
+      const games = await t.prisma.game.findMany({ orderBy: { gameNumber: 'asc' } });
+      expect(games.map((x) => x.phase)).toEqual(['FINISHED', 'PLAYING']);
+    });
   });
 });

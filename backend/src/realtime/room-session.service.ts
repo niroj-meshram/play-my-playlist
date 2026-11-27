@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { RoomSnapshotDto } from '@pmp/shared';
+import { GameOrchestrator } from '../games/game-orchestrator.service.js';
 import { HostMigrationService } from '../rooms/host-migration.service.js';
 import { RoomsService, type RoomMembership } from '../rooms/rooms.service.js';
 import { PresenceService } from './presence/presence.service.js';
@@ -15,6 +16,7 @@ export class RoomSessionService {
     private readonly presence: PresenceService,
     private readonly broadcaster: RoomBroadcaster,
     private readonly hostMigration: HostMigrationService,
+    private readonly games: GameOrchestrator,
   ) {}
 
   resolveMembership(roomCode: string, userId: string): Promise<RoomMembership> {
@@ -41,6 +43,14 @@ export class RoomSessionService {
     }
     if (result.presenceChanged) {
       this.broadcaster.toRoom(roomId, 'room:presence', { playerId, presence: 'ONLINE' });
+      // A returning player must vote again; never fail the subscription over it.
+      await this.games
+        .onPresenceChanged(roomId)
+        .catch((error: unknown) =>
+          this.logger.warn(
+            `Vote re-check after reconnect failed in room ${roomId}: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
     }
     await this.hostMigration.onPlayerOnline(roomId, playerId);
 

@@ -5,9 +5,10 @@ import type { ActiveGamePhase } from '@pmp/shared';
  * player and the end-game conditions advance a game.
  * - ADVANCE: the leader's button (stop song, open/close voting, next song, results, finish).
  * - PLAYBACK_ENDED: the song ended on the leader's device.
+ * - VOTING_COMPLETE: every required voter has voted (docs/architecture.md §6).
  * - END_EARLY: the game cannot continue (too few players, or no songs left).
  */
-export type GameTrigger = 'ADVANCE' | 'PLAYBACK_ENDED' | 'END_EARLY';
+export type GameTrigger = 'ADVANCE' | 'PLAYBACK_ENDED' | 'VOTING_COMPLETE' | 'END_EARLY';
 
 export interface RoundProgress {
   roundNumber: number;
@@ -24,6 +25,7 @@ export function nextPhase(
 ): ActiveGamePhase | null {
   if (trigger === 'END_EARLY') return IN_ROUND.includes(phase) ? 'SCOREBOARD' : null;
   if (trigger === 'PLAYBACK_ENDED') return phase === 'PLAYING' ? 'DISCUSSION' : null;
+  if (trigger === 'VOTING_COMPLETE') return phase === 'VOTING' ? 'REVEAL' : null;
 
   switch (phase) {
     case 'PLAYING':

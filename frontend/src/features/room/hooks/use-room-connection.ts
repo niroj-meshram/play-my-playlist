@@ -6,11 +6,13 @@ import { useCallback, useEffect, useRef } from 'react';
 import { createGameSocket, emitWithAck, type GameSocket } from '@/lib/socket-client';
 import {
   applyGameFinished,
+  applyGameResults,
   applyGameStarted,
   applyPhaseChanged,
   applyRoundRevealed,
   applyRoundStarted,
   applyViewerContext,
+  applyVoteProgress,
   type GameUpdate,
 } from '../../game/game-events';
 import { myPlaylistKey } from '../../playlist/playlist-api';
@@ -126,7 +128,9 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
     socket.on('game:round-started', (e) => game((r) => applyRoundStarted(r, e)));
     socket.on('game:track-replaced', (e) => game((r) => applyRoundStarted(r, e)));
     socket.on('round:viewer-context', (e) => game((r) => applyViewerContext(r, e)));
+    socket.on('vote:progress', (e) => game((r) => applyVoteProgress(r, e)));
     socket.on('game:round-revealed', (e) => game((r) => applyRoundRevealed(r, e)));
+    socket.on('game:results', (e) => game((r) => applyGameResults(r, e)));
     socket.on('game:finished', (e) => game((r) => applyGameFinished(r, e)));
 
     document.addEventListener('visibilitychange', resync);

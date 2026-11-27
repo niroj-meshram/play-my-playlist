@@ -31,6 +31,32 @@ export interface PublicRoundDto {
   track: PublicTrackDto;
 }
 
+/** Why a player received points in a round (docs/architecture.md §5). */
+export const RoundScoreReason = {
+  /** Nobody guessed the owner. */
+  OWNER_UNGUESSED: 'OWNER_UNGUESSED',
+  /** The only correct guess. */
+  SOLE_CORRECT: 'SOLE_CORRECT',
+  /** One of two or more correct guesses. */
+  SHARED_CORRECT: 'SHARED_CORRECT',
+  /** Nobody guessed the owner, but the owner was offline when voting closed: 0 points (D12). */
+  OWNER_OFFLINE: 'OWNER_OFFLINE',
+} as const;
+export type RoundScoreReason = (typeof RoundScoreReason)[keyof typeof RoundScoreReason];
+
+/** A vote as shown after the reveal. Individual votes are never public before it. */
+export interface RevealedVoteDto {
+  voterPlayerId: string;
+  suspectPlayerId: string;
+  isCorrect: boolean;
+}
+
+export interface RoundPointsDto {
+  playerId: string;
+  points: number;
+  reason: RoundScoreReason;
+}
+
 /** Published only once a round reaches REVEAL. */
 export interface RoundRevealDto {
   roundNumber: number;
@@ -38,11 +64,63 @@ export interface RoundRevealDto {
   ownerPlayerId: string;
   /** Included because the owner may have left the room and be missing from the player list. */
   ownerDisplayName: string;
+  votes: RevealedVoteDto[];
+  points: RoundPointsDto[];
+}
+
+/** A player the viewer may vote for. Whether they are online comes from room presence. */
+export interface VoteCandidateDto {
+  playerId: string;
+  displayName: string;
+  avatarId: string;
 }
 
 /** Facts only the viewer may know about the current round. */
 export interface GameViewerContextDto {
   isYourPlaylist: boolean;
+  /** Every other participant still in the room, in the same order for everyone. */
+  candidates: VoteCandidateDto[];
+  /** The player the viewer voted for this round, or `null`. */
+  myVote: string | null;
+}
+
+/** Only counts are public while voting is open: since everyone votes, they reveal nothing. */
+export interface VoteProgressDto {
+  votesIn: number;
+  /** Players expected to vote: online participants plus anyone who already voted. */
+  expected: number;
+}
+
+/** One line of the live scoreboard (D1). Participants who left stay listed. */
+export interface ScoreboardEntryDto {
+  playerId: string;
+  displayName: string;
+  avatarId: string;
+  /** Ties share a rank (1, 1, 3). */
+  rank: number;
+  totalScore: number;
+  correctGuesses: number;
+  /** Points earned because nobody guessed the player's playlist. */
+  ownerPoints: number;
+  hasLeft: boolean;
+}
+
+/** An award; ties are shared, so several players can hold it. */
+export interface AwardDto {
+  playerIds: string[];
+  value: number;
+}
+
+export interface GameAwardsDto {
+  /** Most correct guesses (null when nobody guessed right). */
+  topGuesser: AwardDto | null;
+  /** Most points from playlists nobody guessed (null when nobody earned any). */
+  bestBluffer: AwardDto | null;
+}
+
+export interface GameResultsDto {
+  ranking: ScoreboardEntryDto[];
+  awards: GameAwardsDto;
 }
 
 /** Every game event and snapshot carries these, so clients can drop stale events. */
@@ -64,8 +142,14 @@ export interface GameSnapshotDto extends GameVersioned {
   /** The current round's song; `null` in SCOREBOARD and FINISHED. */
   currentRound: PublicRoundDto | null;
   viewer: GameViewerContextDto;
+  /** Vote counts, in VOTING only. */
+  voteProgress: VoteProgressDto | null;
   /** The latest revealed round, while the game is in REVEAL or later. */
   lastReveal: RoundRevealDto | null;
+  /** Live scoreboard; it only changes when a round is revealed. */
+  scoreboard: ScoreboardEntryDto[];
+  /** Final ranking and awards, in SCOREBOARD and FINISHED. */
+  results: GameResultsDto | null;
   endReason: GameEndReason | null;
 }
 
@@ -105,6 +189,22 @@ export interface PlaybackReportResponse {
   applied: boolean;
 }
 
+export interface VoteSubmitRequest {
+  roundNumber: number;
+  suspectPlayerId: string;
+  /** A retry with the same ID returns the original result instead of ALREADY_VOTED. */
+  clientRequestId: string;
+}
+
+export interface VoteSubmitResponse {
+  roundNumber: number;
+  suspectPlayerId: string;
+}
+
+export interface GameRematchRequest {
+  clientRequestId: string;
+}
+
 // Events (server → client)
 
 export interface GameStartedEvent extends GameVersioned {
@@ -132,10 +232,21 @@ export interface RoundViewerContextEvent extends GameVersioned {
   viewer: GameViewerContextDto;
 }
 
+export interface VoteProgressEvent extends GameVersioned, VoteProgressDto {
+  roundNumber: number;
+}
+
 export interface GameRoundRevealedEvent extends GameVersioned {
   reveal: RoundRevealDto;
+  scoreboard: ScoreboardEntryDto[];
+}
+
+/** Sent when the game reaches SCOREBOARD. */
+export interface GameResultsEvent extends GameVersioned {
+  results: GameResultsDto;
 }
 
 export interface GameFinishedEvent extends GameVersioned {
   endReason: GameEndReason;
+  results: GameResultsDto;
 }

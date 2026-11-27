@@ -225,10 +225,13 @@ model GameParticipant {
   correctGuesses Int    @default(0) @db.SmallInt
   ownerPoints    Int    @default(0)
 
-  game       Game          @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  roomPlayer RoomPlayer    @relation(fields: [roomPlayerId], references: [id], onDelete: Cascade)
+  game          Game          @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  roomPlayer    RoomPlayer    @relation(fields: [roomPlayerId], references: [id], onDelete: Cascade)
   /// PRIVATE until the reveal of a round from this playlist.
-  playlist   GamePlaylist?
+  playlist      GamePlaylist?
+  votesCast     Vote[]        @relation("VotesCast")
+  votesReceived Vote[]        @relation("VotesReceived")
+  roundScores   RoundScore[]
 
   @@unique([gameId, roomPlayerId])
 }
@@ -269,7 +272,58 @@ model GameRound {
 
   game         Game         @relation(fields: [gameId], references: [id], onDelete: Cascade)
   gamePlaylist GamePlaylist @relation(fields: [gamePlaylistId], references: [id], onDelete: Cascade)
+  votes        Vote[]
+  scores       RoundScore[]
 
   @@unique([gameId, roundNumber])
   @@unique([gameId, youtubeVideoId])
+}
+
+// ─── Voting & scoring ────────────────────────────────────────────────────────
+
+enum RoundScoreReason {
+  /// Nobody guessed the owner: the owner scores.
+  OWNER_UNGUESSED
+  /// Exactly one participant guessed correctly.
+  SOLE_CORRECT
+  /// Two or more participants guessed correctly.
+  SHARED_CORRECT
+  /// The owner was offline when voting closed (D12): 0 points, kept for audit and the reveal.
+  OWNER_OFFLINE
+}
+
+/// One vote per participant per round, final once inserted. PRIVATE until the round is
+/// REVEALED: only the count is public while voting is open (docs/architecture.md §6).
+/// A CHECK constraint (migration SQL) blocks self-votes.
+model Vote {
+  id              String   @id @default(uuid()) @db.Uuid
+  roundId         String   @db.Uuid
+  voterId         String   @db.Uuid
+  suspectId       String   @db.Uuid
+  /// Null until the reveal, which sets it inside the scoring transaction.
+  isCorrect       Boolean?
+  /// A retry with the same ID returns the original ack; a different ID is ALREADY_VOTED.
+  clientRequestId String   @db.Uuid
+  createdAt       DateTime @default(now())
+
+  round   GameRound       @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  voter   GameParticipant @relation("VotesCast", fields: [voterId], references: [id], onDelete: Cascade)
+  suspect GameParticipant @relation("VotesReceived", fields: [suspectId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, voterId])
+}
+
+/// Points awarded in one round: the audit trail behind the GameParticipant totals.
+/// UNIQUE (roundId, participantId) makes score allocation idempotent.
+model RoundScore {
+  id            String           @id @default(uuid()) @db.Uuid
+  roundId       String           @db.Uuid
+  participantId String           @db.Uuid
+  points        Int              @db.SmallInt
+  reason        RoundScoreReason
+
+  round       GameRound       @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  participant GameParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, participantId])
 }

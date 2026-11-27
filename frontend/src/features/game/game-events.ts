@@ -2,18 +2,29 @@ import type {
   ActiveGamePhase,
   GameFinishedEvent,
   GamePhaseChangedEvent,
+  GameResultsEvent,
   GameRoundRevealedEvent,
   GameRoundStartedEvent,
   GameSnapshotDto,
   GameVersioned,
+  GameViewerContextDto,
   RoomSnapshotDto,
   RoundViewerContextEvent,
+  VoteProgressEvent,
+  VoteSubmitResponse,
 } from '@pmp/shared';
 
 /** A reducer either returns the next room state or asks for a full resync. */
 export type GameUpdate = RoomSnapshotDto | 'resync';
 
 const IN_ROUND: readonly ActiveGamePhase[] = ['PLAYING', 'DISCUSSION', 'VOTING', 'REVEAL'];
+
+/** Until a new round's private context arrives, the viewer knows nothing about it. */
+const NO_VIEWER_CONTEXT: GameViewerContextDto = {
+  isYourPlaylist: false,
+  candidates: [],
+  myVote: null,
+};
 
 /*
  * Pure reducers for game events (docs/architecture.md §9). Each event carries the game's
@@ -50,7 +61,9 @@ export function applyPhaseChanged(room: RoomSnapshotDto, e: GamePhaseChangedEven
       endReason: e.endReason,
       // A new round's song arrives with `game:round-started` (same version).
       currentRound: IN_ROUND.includes(e.phase) && sameRound ? game.currentRound : null,
-      viewer: sameRound ? game.viewer : { isYourPlaylist: false },
+      viewer: sameRound ? game.viewer : NO_VIEWER_CONTEXT,
+      // Counts arrive with `vote:progress` (same version) when voting opens.
+      voteProgress: e.phase === 'VOTING' && sameRound ? game.voteProgress : null,
     };
   });
 }
@@ -69,8 +82,35 @@ export function applyViewerContext(room: RoomSnapshotDto, e: RoundViewerContextE
   );
 }
 
+export function applyVoteProgress(room: RoomSnapshotDto, e: VoteProgressEvent): GameUpdate {
+  return withGame(room, e, (game) =>
+    game.phase === 'VOTING' && game.roundNumber === e.roundNumber
+      ? { ...game, voteProgress: { votesIn: e.votesIn, expected: e.expected } }
+      : game,
+  );
+}
+
+/** The server accepted the viewer's vote (from the command's acknowledgement). */
+export function applyMyVote(room: RoomSnapshotDto, vote: VoteSubmitResponse): RoomSnapshotDto {
+  const game = room.game;
+  if (!game || game.roundNumber !== vote.roundNumber) return room;
+  return { ...room, game: { ...game, viewer: { ...game.viewer, myVote: vote.suspectPlayerId } } };
+}
+
 export function applyRoundRevealed(room: RoomSnapshotDto, e: GameRoundRevealedEvent): GameUpdate {
-  return withGame(room, e, (game) => ({ ...game, lastReveal: e.reveal }));
+  return withGame(room, e, (game) => ({
+    ...game,
+    lastReveal: e.reveal,
+    scoreboard: e.scoreboard,
+  }));
+}
+
+export function applyGameResults(room: RoomSnapshotDto, e: GameResultsEvent): GameUpdate {
+  return withGame(room, e, (game) => ({
+    ...game,
+    results: e.results,
+    scoreboard: e.results.ranking,
+  }));
 }
 
 export function applyGameFinished(room: RoomSnapshotDto, e: GameFinishedEvent): GameUpdate {
@@ -79,6 +119,8 @@ export function applyGameFinished(room: RoomSnapshotDto, e: GameFinishedEvent): 
     phase: 'FINISHED',
     currentRound: null,
     endReason: e.endReason,
+    results: e.results,
+    scoreboard: e.results.ranking,
   }));
   // The room is back in the lobby once the game finishes.
   return next === 'resync' ? next : { ...next, status: 'LOBBY' };

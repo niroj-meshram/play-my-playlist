@@ -22,11 +22,16 @@ import {
   SONG_SELECT,
   loadPublicRound,
   loadReveal,
+  loadScoreboard,
   playlistLabel,
+  toCandidates,
   toPublicTrack,
+  toResults,
   versioned,
   type Song,
 } from './game.mapper.js';
+import { RoundScorer } from './round-scorer.service.js';
+import { VoteCounter } from './vote-counter.service.js';
 
 type Tx = Prisma.TransactionClient;
 
@@ -62,6 +67,8 @@ export class GameOrchestrator {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: GameEventsService,
+    private readonly votes: VoteCounter,
+    private readonly scorer: RoundScorer,
   ) {}
 
   /** Leader starts a game from the lobby: participants, labels and the full round plan. */
@@ -78,6 +85,70 @@ export class GameOrchestrator {
     }
     this.events.publish(roomId, notices);
     this.logger.log(`Game started in room ${roomId}`);
+  }
+
+  /**
+   * Leader starts the next game from SCOREBOARD (finishing the current one) or from the
+   * lobby after a game. Both happen in one transaction: if the new game cannot start
+   * (e.g. too few players are left), the current game stays on its scoreboard.
+   */
+  async rematch(roomId: string, playerId: string): Promise<void> {
+    let notices: GameNotice[];
+    try {
+      notices = await this.prisma.$transaction(async (tx) => {
+        const room = await lockRoomById(tx, roomId);
+        assertLeader(room, playerId);
+        const game = await this.activeGame(tx, roomId);
+        const finishing: GameNotice[] = [];
+        if (game) {
+          if (game.phase !== 'SCOREBOARD') throw gameInProgress();
+          finishing.push(...((await this.apply(tx, roomId, game, 'ADVANCE')) ?? []));
+        }
+        return [...finishing, ...(await this.startInTx(tx, roomId, playerId))];
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw gameInProgress();
+      }
+      throw error;
+    }
+    this.events.publish(roomId, notices);
+    this.logger.log(`Rematch started in room ${roomId}`);
+  }
+
+  /**
+   * Re-evaluates voting after anything that changes who must vote: a vote, a leave, a
+   * player going AWAY or coming back. Closes voting when every required voter has voted,
+   * otherwise announces the new counts. The caller holds the room lock.
+   */
+  async closeVotingIfCompleteInTx(tx: Tx, roomId: string): Promise<GameNotice[]> {
+    const game = await this.activeGame(tx, roomId);
+    if (game?.phase !== 'VOTING') return [];
+    const tally = await this.votes.tally(tx, roomId, game.id, game.currentRound);
+    if (tally.complete) return (await this.apply(tx, roomId, game, 'VOTING_COMPLETE')) ?? [];
+    return [
+      {
+        kind: 'voteProgress',
+        event: {
+          ...versioned(game.stateVersion),
+          roundNumber: game.currentRound,
+          votesIn: tally.votesIn,
+          expected: tally.expected,
+        },
+      },
+    ];
+  }
+
+  /** A player went AWAY or came back: the set of required voters may have changed. */
+  async onPresenceChanged(roomId: string): Promise<void> {
+    // Cheap pre-check without the lock: most presence changes happen outside voting.
+    const voting = await this.prisma.game.count({ where: { roomId, phase: 'VOTING' } });
+    if (voting === 0) return;
+    const notices = await this.prisma.$transaction(async (tx) => {
+      await lockRoomById(tx, roomId);
+      return this.closeVotingIfCompleteInTx(tx, roomId);
+    });
+    this.events.publish(roomId, notices);
   }
 
   /** Leader moves the game one phase forward. Stale or repeated clicks are no-ops. */
@@ -152,7 +223,9 @@ export class GameOrchestrator {
         (await this.apply(tx, roomId, game, 'END_EARLY', GameEndReason.NOT_ENOUGH_PLAYERS)) ?? []
       );
     }
-    return this.reassignLeaverRounds(tx, game, leaver.playlist.id, remaining);
+    const reassigned = await this.reassignLeaverRounds(tx, game, leaver.playlist.id, remaining);
+    // The leaver no longer has to vote, which may complete the voting.
+    return [...reassigned, ...(await this.closeVotingIfCompleteInTx(tx, roomId))];
   }
 
   // ---------------------------------------------------------------------------------------
@@ -260,6 +333,7 @@ export class GameOrchestrator {
     });
 
     const labelOf = new Map<string, string>(labelled.map((e) => [e.gamePlaylistId, e.label]));
+    const viewers = await this.viewerNotices(tx, gameId, 1, stateVersion);
     return [
       {
         kind: 'started',
@@ -282,15 +356,7 @@ export class GameOrchestrator {
           },
         },
       },
-      ...labelled.map((e): GameNotice => ({
-        kind: 'viewer',
-        playerId: e.roomPlayerId,
-        event: {
-          ...versioned(stateVersion),
-          roundNumber: 1,
-          viewer: { isYourPlaylist: e.gamePlaylistId === first.playlistId },
-        },
-      })),
+      ...viewers,
     ];
   }
 
@@ -342,13 +408,39 @@ export class GameOrchestrator {
       },
     ];
 
+    if (to === 'VOTING') {
+      // Clients learn the expected number of voters as soon as voting opens.
+      const tally = await this.votes.tally(tx, roomId, game.id, roundNumber);
+      notices.push({
+        kind: 'voteProgress',
+        event: {
+          ...versioned(stateVersion),
+          roundNumber,
+          votesIn: tally.votesIn,
+          expected: tally.expected,
+        },
+      });
+    }
     if (to === 'REVEAL') {
+      await this.scorer.scoreInTx(tx, roomId, game.id, roundNumber);
       await tx.gameRound.update({
         where: { gameId_roundNumber: { gameId: game.id, roundNumber } },
         data: { status: 'REVEALED', revealedAt: now },
       });
-      const reveal = await loadReveal(tx, game.id, roundNumber);
-      if (reveal) notices.push({ kind: 'revealed', event: { ...versioned(stateVersion), reveal } });
+      const [reveal, scoreboard] = await Promise.all([
+        loadReveal(tx, game.id, roundNumber),
+        loadScoreboard(tx, game.id),
+      ]);
+      if (reveal) {
+        notices.push({
+          kind: 'revealed',
+          event: { ...versioned(stateVersion), reveal, scoreboard },
+        });
+      }
+    }
+    if (to === 'SCOREBOARD') {
+      const results = toResults(await loadScoreboard(tx, game.id));
+      notices.push({ kind: 'results', event: { ...versioned(stateVersion), results } });
     }
     if (to === 'PLAYING') {
       notices.push(...(await this.activateRound(tx, game.id, roundNumber, stateVersion, now)));
@@ -361,7 +453,11 @@ export class GameOrchestrator {
       });
       notices.push({
         kind: 'finished',
-        event: { ...versioned(stateVersion), endReason: game.endReason ?? endReason },
+        event: {
+          ...versioned(stateVersion),
+          endReason: game.endReason ?? endReason,
+          results: toResults(await loadScoreboard(tx, game.id)),
+        },
       });
     }
     return notices;
@@ -393,7 +489,7 @@ export class GameOrchestrator {
     roundNumber: number,
     stateVersion: number,
   ): Promise<GameNotice[]> {
-    const [round, participants] = await Promise.all([
+    const [round, participants, scoreboard] = await Promise.all([
       tx.gameRound.findUniqueOrThrow({
         where: { gameId_roundNumber: { gameId, roundNumber } },
         select: { gamePlaylist: { select: { ownerParticipantId: true } } },
@@ -402,14 +498,20 @@ export class GameOrchestrator {
         where: { gameId, roomPlayer: { status: 'ACTIVE' } },
         select: { id: true, roomPlayerId: true },
       }),
+      loadScoreboard(tx, gameId),
     ]);
+    // Private: each participant learns only whether the song is theirs.
     return participants.map((p) => ({
       kind: 'viewer',
       playerId: p.roomPlayerId,
       event: {
         ...versioned(stateVersion),
         roundNumber,
-        viewer: { isYourPlaylist: p.id === round.gamePlaylist.ownerParticipantId },
+        viewer: {
+          isYourPlaylist: p.id === round.gamePlaylist.ownerParticipantId,
+          candidates: toCandidates(scoreboard, p.roomPlayerId),
+          myVote: null,
+        },
       },
     }));
   }

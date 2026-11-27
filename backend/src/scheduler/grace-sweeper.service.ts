@@ -10,6 +10,7 @@ import type { EnvironmentVariables } from '../config/env.validation.js';
 import type { DueTimer } from '../realtime/presence/presence.keys.js';
 import { PresenceService } from '../realtime/presence/presence.service.js';
 import { RoomBroadcaster } from '../realtime/room-broadcaster.service.js';
+import { GameOrchestrator } from '../games/game-orchestrator.service.js';
 import { HostMigrationService } from '../rooms/host-migration.service.js';
 
 /**
@@ -28,6 +29,7 @@ export class GraceSweeperService implements OnApplicationBootstrap, OnModuleDest
     private readonly presence: PresenceService,
     private readonly broadcaster: RoomBroadcaster,
     private readonly hostMigration: HostMigrationService,
+    private readonly games: GameOrchestrator,
     config: ConfigService<EnvironmentVariables, true>,
   ) {
     this.intervalMs = config.get('GRACE_SWEEP_INTERVAL_MS', { infer: true });
@@ -82,6 +84,8 @@ export class GraceSweeperService implements OnApplicationBootstrap, OnModuleDest
     if (presence === PlayerPresence.AWAY) {
       this.logger.log(`Player ${due.playerId} in room ${due.roomId} is away`);
       await this.hostMigration.onPlayerAway(due.roomId, due.playerId);
+      // An away player is no longer waited for, which may complete the voting.
+      await this.games.onPresenceChanged(due.roomId);
     }
   }
 }

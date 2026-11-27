@@ -5,8 +5,12 @@ import { Card } from '@/components/ui/card';
 import type { RoomConnection } from '../../room/hooks/use-room-connection';
 import { LeaveRoomButton } from '../../room/components/leave-room-button';
 import { PlayerList } from '../../room/components/player-list';
+import { FinalResults } from './final-results';
 import { LeaderControls } from './leader-controls';
+import { RevealDetails } from './reveal-details';
+import { Scoreboard } from './scoreboard';
 import { SongCard } from './song-card';
+import { VotePanel } from './vote-panel';
 
 const PHASE_TITLE: Record<ActiveGamePhase, string> = {
   PLAYING: 'Listen',
@@ -24,7 +28,9 @@ function phaseHint(game: GameSnapshotDto, leaderName: string): string {
     case 'DISCUSSION':
       return 'Whose playlist is this song from? Talk it over.';
     case 'VOTING':
-      return 'Voting arrives in the next milestone. The leader closes voting for now.';
+      return game.viewer.isYourPlaylist
+        ? "Vote too, so nobody can tell it's yours."
+        : 'Voting closes when everyone has voted, or when the leader closes it.';
     case 'REVEAL':
       return '';
     case 'SCOREBOARD':
@@ -33,11 +39,11 @@ function phaseHint(game: GameSnapshotDto, leaderName: string): string {
         ? 'The game ended early: too few players were left.'
         : game.endReason === 'OUT_OF_SONGS'
           ? 'The game ended early: no playable songs were left.'
-          : 'Final results arrive in the next milestone.';
+          : '';
   }
 }
 
-/** Minimal game screen (M4): phase, round, song, reveal and the leader's controls. */
+/** Minimal game screen (M4–M5): song, voting, reveal, scores and the leader's controls. */
 export function GameScreen({
   room,
   connection,
@@ -51,6 +57,7 @@ export function GameScreen({
     room.players.find((p) => p.id === room.hostPlayerId)?.displayName ?? 'the host';
   const hint = phaseHint(game, leaderName);
   const reveal = game.phase === 'REVEAL' ? game.lastReveal : null;
+  const results = game.phase === 'SCOREBOARD' ? game.results : null;
 
   return (
     <Card>
@@ -64,14 +71,23 @@ export function GameScreen({
       {game.currentRound && (
         <SongCard round={game.currentRound} isYours={game.viewer.isYourPlaylist} />
       )}
+      {game.phase === 'VOTING' && <VotePanel room={room} game={game} connection={connection} />}
       {reveal && (
-        <p role="status" className="rounded-lg border bg-muted p-3 text-center font-medium">
-          {reveal.playlistLabel} was{' '}
-          {reveal.ownerPlayerId === room.viewerPlayerId ? 'your' : `${reveal.ownerDisplayName}'s`}{' '}
-          playlist!
-        </p>
+        <RevealDetails
+          reveal={reveal}
+          scoreboard={game.scoreboard}
+          viewerPlayerId={room.viewerPlayerId}
+        />
       )}
       {hint && <p className="text-sm text-muted-foreground">{hint}</p>}
+      {results && (
+        <FinalResults
+          results={results}
+          viewerPlayerId={room.viewerPlayerId}
+          isLeader={isLeader}
+          connection={connection}
+        />
+      )}
 
       {isLeader ? (
         <LeaderControls game={game} connection={connection} />
@@ -79,6 +95,7 @@ export function GameScreen({
         <p className="text-sm text-muted-foreground">Waiting for {leaderName}…</p>
       )}
 
+      {!results && <Scoreboard entries={game.scoreboard} viewerPlayerId={room.viewerPlayerId} />}
       <PlayerList
         players={room.players}
         viewerPlayerId={room.viewerPlayerId}

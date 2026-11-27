@@ -5,16 +5,19 @@ import { useCallback, useState } from 'react';
 import { emitWithAck, type GameSocket } from '@/lib/socket-client';
 
 type Payload<E extends keyof ClientToServerEvents> = Parameters<ClientToServerEvents[E]>[0];
+type Result<E extends keyof ClientToServerEvents> =
+  Parameters<Parameters<ClientToServerEvents[E]>[1]>[0] extends WsAck<infer T> ? T : never;
 
 interface GameCommand<E extends keyof ClientToServerEvents> {
-  run: (payload: Payload<E>) => Promise<void>;
+  /** Resolves with the acknowledged result, or `null` when the command failed. */
+  run: (payload: Payload<E>) => Promise<Result<E> | null>;
   pending: boolean;
   error: string | null;
 }
 
 /**
  * Sends one game command over the room socket and tracks its pending/error state.
- * The resulting state change arrives as a server event, so nothing is applied locally.
+ * State changes arrive as server events; a caller may also use the acknowledged result.
  */
 export function useGameCommand<E extends keyof ClientToServerEvents>(
   getSocket: () => GameSocket | null,
@@ -28,13 +31,15 @@ export function useGameCommand<E extends keyof ClientToServerEvents>(
       const socket = getSocket();
       if (!socket?.connected) {
         setError('Not connected. Please wait a moment.');
-        return;
+        return null;
       }
       setPending(true);
       setError(null);
       try {
-        const ack = (await emitWithAck(socket, event, payload)) as WsAck<unknown>;
-        if (!ack.ok) setError(ack.error.message);
+        const ack = (await emitWithAck(socket, event, payload)) as WsAck<Result<E>>;
+        if (ack.ok) return ack.data;
+        setError(ack.error.message);
+        return null;
       } finally {
         setPending(false);
       }

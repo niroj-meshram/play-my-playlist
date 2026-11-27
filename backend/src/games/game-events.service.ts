@@ -2,10 +2,12 @@ import { Injectable } from '@nestjs/common';
 import type {
   GameFinishedEvent,
   GamePhaseChangedEvent,
+  GameResultsEvent,
   GameRoundRevealedEvent,
   GameRoundStartedEvent,
   GameStartedEvent,
   RoundViewerContextEvent,
+  VoteProgressEvent,
 } from '@pmp/shared';
 import { RoomBroadcaster } from '../realtime/room-broadcaster.service.js';
 
@@ -16,7 +18,10 @@ export type GameNotice =
   | { kind: 'round'; replaced: boolean; event: GameRoundStartedEvent }
   /** Private: goes only to this player's channel. */
   | { kind: 'viewer'; playerId: string; event: RoundViewerContextEvent }
+  /** Counts only: individual votes stay private until the reveal. */
+  | { kind: 'voteProgress'; event: VoteProgressEvent }
   | { kind: 'revealed'; event: GameRoundRevealedEvent }
+  | { kind: 'results'; event: GameResultsEvent }
   | { kind: 'finished'; event: GameFinishedEvent };
 
 /**
@@ -46,8 +51,14 @@ export class GameEventsService {
         case 'viewer':
           this.broadcaster.toPlayer(notice.playerId, 'round:viewer-context', notice.event);
           break;
+        case 'voteProgress':
+          this.broadcaster.toRoom(roomId, 'vote:progress', notice.event);
+          break;
         case 'revealed':
           this.broadcaster.toRoom(roomId, 'game:round-revealed', notice.event);
+          break;
+        case 'results':
+          this.broadcaster.toRoom(roomId, 'game:results', notice.event);
           break;
         case 'finished':
           this.broadcaster.toRoom(roomId, 'game:finished', notice.event);

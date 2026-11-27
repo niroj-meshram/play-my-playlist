@@ -3,8 +3,10 @@ import {
   PlaybackState,
   type ActiveGamePhase,
   type GameAdvanceRequest,
+  type GameRematchRequest,
   type GameStartRequest,
   type PlaybackReportRequest,
+  type VoteSubmitRequest,
 } from '@pmp/shared';
 import { IsIn, IsInt, IsOptional, IsUUID, Matches, Max, Min } from 'class-validator';
 
@@ -12,6 +14,25 @@ const ACTIVE_PHASES = Object.values(GamePhase).filter((p) => p !== 'LOBBY');
 const MAX_ROUND = 100;
 
 export class GameStartDto implements GameStartRequest {
+  @IsUUID('4')
+  clientRequestId: string;
+}
+
+export class GameRematchDto implements GameRematchRequest {
+  @IsUUID('4')
+  clientRequestId: string;
+}
+
+export class VoteSubmitDto implements VoteSubmitRequest {
+  @IsInt()
+  @Min(1)
+  @Max(MAX_ROUND)
+  roundNumber: number;
+
+  /** Room player IDs are UUIDv4; anything else cannot be a candidate. */
+  @IsUUID('4')
+  suspectPlayerId: string;
+
   @IsUUID('4')
   clientRequestId: string;
 }

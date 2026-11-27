@@ -14,15 +14,23 @@ import {
   type PlaybackReportResponse,
   type RoomSnapshotDto,
   type TimePingResponse,
+  type VoteSubmitResponse,
 } from '@pmp/shared';
 import { HttpStatus } from '@nestjs/common';
 import { AccessTokenVerifier } from '../common/auth/access-token.verifier.js';
 import { AppException } from '../common/errors/app.exception.js';
 import { createValidationPipe } from '../common/http/create-validation-pipe.js';
 import { GameOrchestrator } from '../games/game-orchestrator.service.js';
+import { VotingService } from '../games/voting.service.js';
 import { normalizeRoomCode } from '../rooms/room-code.pipe.js';
 import { CommandDedupeService } from './command-dedupe.service.js';
-import { GameAdvanceDto, GameStartDto, PlaybackReportDto } from './dto/game-commands.dto.js';
+import {
+  GameAdvanceDto,
+  GameRematchDto,
+  GameStartDto,
+  PlaybackReportDto,
+  VoteSubmitDto,
+} from './dto/game-commands.dto.js';
 import { RoomSubscribeDto } from './dto/room-subscribe.dto.js';
 import { TimePingDto } from './dto/time-ping.dto.js';
 import { RoomBroadcaster } from './room-broadcaster.service.js';
@@ -52,6 +60,7 @@ export class GameGateway implements OnGatewayInit<GameNamespace>, OnGatewayDisco
     private readonly sessions: RoomSessionService,
     private readonly broadcaster: RoomBroadcaster,
     private readonly games: GameOrchestrator,
+    private readonly voting: VotingService,
     private readonly dedupe: CommandDedupeService,
   ) {}
 
@@ -145,6 +154,30 @@ export class GameGateway implements OnGatewayInit<GameNamespace>, OnGatewayDisco
   ): Promise<PlaybackReportResponse> {
     const { roomId, playerId } = requireSubscription(socket);
     return this.games.playbackReport(roomId, playerId, dto);
+  }
+
+  /** Idempotent through the vote's own clientRequestId, stored with the vote. */
+  @SubscribeMessage('vote:submit')
+  submitVote(
+    @ConnectedSocket() socket: GameSocket,
+    @MessageBody() dto: VoteSubmitDto,
+  ): Promise<VoteSubmitResponse> {
+    const { roomId, playerId } = requireSubscription(socket);
+    return this.voting.submit(roomId, playerId, dto);
+  }
+
+  /** Leader starts the next game. A retried request (same clientRequestId) is not run twice. */
+  @SubscribeMessage('game:rematch')
+  rematch(
+    @ConnectedSocket() socket: GameSocket,
+    @MessageBody() dto: GameRematchDto,
+  ): Promise<RoomSnapshotDto> {
+    const { roomId, roomCode, playerId } = requireSubscription(socket);
+    const { userId } = socket.data;
+    return this.dedupe.once(userId, dto.clientRequestId, async () => {
+      await this.games.rematch(roomId, playerId);
+      return this.sessions.snapshot(roomCode, userId);
+    });
   }
 
   @SubscribeMessage('time:ping')

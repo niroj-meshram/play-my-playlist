@@ -4,6 +4,8 @@ import type {
   GameAdvanceResponse,
   GameFinishedEvent,
   GamePhaseChangedEvent,
+  GameRematchRequest,
+  GameResultsEvent,
   GameRoundRevealedEvent,
   GameRoundStartedEvent,
   GameStartedEvent,
@@ -11,6 +13,9 @@ import type {
   PlaybackReportRequest,
   PlaybackReportResponse,
   RoundViewerContextEvent,
+  VoteProgressEvent,
+  VoteSubmitRequest,
+  VoteSubmitResponse,
 } from './games.js';
 import type { MyPlaylistStatusEvent, PlaylistSubmissionUpdatedEvent } from './playlists.js';
 import type { RoomPlayerDto, RoomSettingsDto, RoomSnapshotDto } from './rooms.js';
@@ -94,6 +99,10 @@ export interface ClientToServerEvents {
     payload: PlaybackReportRequest,
     ack: AckCallback<PlaybackReportResponse>,
   ) => void;
+  /** Participant, in VOTING. Final once accepted. */
+  'vote:submit': (payload: VoteSubmitRequest, ack: AckCallback<VoteSubmitResponse>) => void;
+  /** Leader only, in SCOREBOARD or after a game. Finishes the game and starts the next one. */
+  'game:rematch': (payload: GameRematchRequest, ack: AckCallback<RoomSnapshotDto>) => void;
 }
 
 export interface ServerToClientEvents {
@@ -114,6 +123,9 @@ export interface ServerToClientEvents {
   'game:track-replaced': (event: GameRoundStartedEvent) => void;
   /** Sent to each participant's private channel only. */
   'round:viewer-context': (event: RoundViewerContextEvent) => void;
+  /** Counts only; individual votes stay private until the reveal. */
+  'vote:progress': (event: VoteProgressEvent) => void;
   'game:round-revealed': (event: GameRoundRevealedEvent) => void;
+  'game:results': (event: GameResultsEvent) => void;
   'game:finished': (event: GameFinishedEvent) => void;
 }
