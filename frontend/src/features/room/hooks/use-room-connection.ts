@@ -1,9 +1,18 @@
 'use client';
 
-import { ErrorCode } from '@pmp/shared';
+import { ErrorCode, type RoomSnapshotDto } from '@pmp/shared';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { createGameSocket, emitWithAck, type GameSocket } from '@/lib/socket-client';
+import {
+  applyGameFinished,
+  applyGameStarted,
+  applyPhaseChanged,
+  applyRoundRevealed,
+  applyRoundStarted,
+  applyViewerContext,
+  type GameUpdate,
+} from '../../game/game-events';
 import { myPlaylistKey } from '../../playlist/playlist-api';
 import { getFreshToken } from '../../session/session-api';
 import {
@@ -18,11 +27,13 @@ import { useRoomStore } from '../room-store';
 
 const RETRY_DELAY_MS = 2_000;
 
-interface RoomConnection {
+export interface RoomConnection {
   /** Reconnects after this tab was replaced by another one. */
   reclaim: () => void;
   /** Closes the connection (used before leaving the room). */
   close: () => void;
+  /** The live socket, for sending game commands. */
+  getSocket: () => GameSocket | null;
 }
 
 /**
@@ -60,11 +71,22 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
       }
     };
 
-    const resync = async () => {
-      if (!socket.connected || document.visibilityState !== 'visible') return;
+    const sync = async () => {
+      if (!socket.connected) return;
       const ack = await emitWithAck(socket, 'sync:request', {});
       if (ack.ok) useRoomStore.getState().setSnapshot(ack.data);
       void queryClient.invalidateQueries({ queryKey: myPlaylistKey(roomCode) });
+    };
+    const resync = async () => {
+      if (document.visibilityState === 'visible') await sync();
+    };
+    /** Applies a versioned game event, or resyncs when events were missed. */
+    const game = (update: (room: RoomSnapshotDto) => GameUpdate) => {
+      const room = useRoomStore.getState().snapshot;
+      if (!room) return;
+      const next = update(room);
+      if (next === 'resync') void sync();
+      else if (next !== room) useRoomStore.getState().setSnapshot(next);
     };
 
     socket.on('connect', () => {
@@ -99,6 +121,13 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
     socket.on('playlist:my-status', (e) =>
       queryClient.setQueryData(myPlaylistKey(roomCode), { playlist: e.playlist }),
     );
+    socket.on('game:started', () => game(applyGameStarted));
+    socket.on('game:phase-changed', (e) => game((r) => applyPhaseChanged(r, e)));
+    socket.on('game:round-started', (e) => game((r) => applyRoundStarted(r, e)));
+    socket.on('game:track-replaced', (e) => game((r) => applyRoundStarted(r, e)));
+    socket.on('round:viewer-context', (e) => game((r) => applyViewerContext(r, e)));
+    socket.on('game:round-revealed', (e) => game((r) => applyRoundRevealed(r, e)));
+    socket.on('game:finished', (e) => game((r) => applyGameFinished(r, e)));
 
     document.addEventListener('visibilitychange', resync);
     socket.connect();
@@ -112,6 +141,8 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
     };
   }, [roomCode, queryClient]);
 
+  const getSocket = useCallback(() => socketRef.current, []);
+
   return {
     reclaim: () => {
       const socket = socketRef.current;
@@ -120,5 +151,6 @@ export function useRoomConnection(roomCode: string, onNotMember: () => void): Ro
       socket.connect();
     },
     close: () => socketRef.current?.disconnect(),
+    getSocket,
   };
 }

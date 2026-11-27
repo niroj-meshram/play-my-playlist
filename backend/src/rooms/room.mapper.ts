@@ -1,6 +1,7 @@
 import {
   PlayerPresence,
   type AvatarId,
+  type GameSnapshotDto,
   type RoomPlayerDto,
   type RoomPreviewDto,
   type RoomSnapshotDto,
@@ -55,6 +56,7 @@ export function toRoomSnapshotDto(
   room: RoomWithActivePlayers,
   viewerPlayerId: string,
   presence: ReadonlyMap<string, PlayerPresence>,
+  game: GameSnapshotDto | null,
 ): RoomSnapshotDto {
   return {
     code: room.code,
@@ -72,6 +74,7 @@ export function toRoomSnapshotDto(
       playlistReady: p.playlist?.status === 'READY',
     })),
     viewerPlayerId,
+    game,
   };
 }
 

@@ -2,7 +2,7 @@ import {
   Injectable,
   Logger,
   type OnApplicationBootstrap,
-  type OnApplicationShutdown,
+  type OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PlayerPresence } from '@pmp/shared';
@@ -17,11 +17,12 @@ import { HostMigrationService } from '../rooms/host-migration.service.js';
  * hands each timer to exactly one instance, and timers survive restarts.
  */
 @Injectable()
-export class GraceSweeperService implements OnApplicationBootstrap, OnApplicationShutdown {
+export class GraceSweeperService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(GraceSweeperService.name);
   private readonly intervalMs: number;
   private timer: NodeJS.Timeout | null = null;
-  private running = false;
+  /** The pass in progress, so shutdown can wait for it. */
+  private running: Promise<void> | null = null;
 
   constructor(
     private readonly presence: PresenceService,
@@ -37,15 +38,26 @@ export class GraceSweeperService implements OnApplicationBootstrap, OnApplicatio
     this.timer.unref();
   }
 
-  onApplicationShutdown(): void {
+  /**
+   * Stops sweeping at the very start of shutdown and waits for a pass in progress, so it
+   * never runs against database, Redis or Socket.IO connections that are closing.
+   */
+  async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    await this.running;
   }
 
   /** One pass. Overlapping passes on the same instance are skipped. */
-  async sweep(now = Date.now()): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+  sweep(now = Date.now()): Promise<void> {
+    if (this.running) return this.running;
+    this.running = this.runPass(now).finally(() => {
+      this.running = null;
+    });
+    return this.running;
+  }
+
+  private async runPass(now: number): Promise<void> {
     try {
       for (const due of await this.presence.claimDue(now)) {
         await this.process(due).catch((error: unknown) =>
@@ -59,8 +71,6 @@ export class GraceSweeperService implements OnApplicationBootstrap, OnApplicatio
       this.logger.warn(
         `Grace sweep failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-    } finally {
-      this.running = false;
     }
   }
 

@@ -7,6 +7,9 @@ import {
   type RoomSnapshotDto,
 } from '@pmp/shared';
 import { AppException } from '../common/errors/app.exception.js';
+import { GameEventsService, type GameNotice } from '../games/game-events.service.js';
+import { GameOrchestrator } from '../games/game-orchestrator.service.js';
+import { GameQueryService } from '../games/game-query.service.js';
 import { Prisma, RoomPlayerStatus, RoomStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PresenceService } from '../realtime/presence/presence.service.js';
@@ -38,6 +41,9 @@ export class RoomsService {
     private readonly codes: RoomCodeGenerator,
     private readonly presence: PresenceService,
     private readonly broadcaster: RoomBroadcaster,
+    private readonly gameQueries: GameQueryService,
+    private readonly gameOrchestrator: GameOrchestrator,
+    private readonly gameEvents: GameEventsService,
   ) {}
 
   /** Creates a room; the creator joins as its host using their profile name and avatar. */
@@ -106,7 +112,11 @@ export class RoomsService {
     });
     const viewer = room?.players.find((p) => p.userId === userId);
     if (!room || room.status === RoomStatus.CLOSED || !viewer) throw roomNotFound();
-    return toRoomSnapshotDto(room, viewer.id, await this.presenceOf(room.id, room.players));
+    const [presence, game] = await Promise.all([
+      this.presenceOf(room.id, room.players),
+      this.gameQueries.snapshotFor(room.id, viewer.id),
+    ]);
+    return toRoomSnapshotDto(room, viewer.id, presence, game);
   }
 
   /** Resolves the caller's active membership; anyone else gets the uniform room 404. */
@@ -193,54 +203,65 @@ export class RoomsService {
   }
 
   /**
-   * Leaves the lobby. A departing host is replaced by the longest-present player;
-   * the room closes when nobody is left. Leaving a running game is handled with the
-   * game engine (M4) and is rejected until then.
+   * Leaves the room, also during a game. A departing host is replaced by the
+   * longest-present player; the room closes when nobody is left. In a running game the
+   * leaver's upcoming rounds move to other playlists, or the game ends when too few
+   * players remain (docs/architecture.md §5).
    */
   async leave(code: string, userId: string): Promise<void> {
-    const { roomId, playerId, newHostId } = await this.prisma.$transaction(async (tx) => {
-      const room = await lockRoomByCode(tx, code);
-      const player = await this.requireActivePlayer(tx, room.id, userId);
-      if (room.status !== RoomStatus.LOBBY) {
-        throw new AppException(
-          ErrorCode.GAME_IN_PROGRESS,
-          'You cannot leave while a game is in progress.',
-          HttpStatus.CONFLICT,
-        );
-      }
-
-      const now = new Date();
-      await tx.roomPlayer.update({
-        where: { id: player.id },
-        data: { status: RoomPlayerStatus.LEFT, leftAt: now },
-      });
-      // A departed player's playlist is private data with no further use.
-      await tx.playlist.deleteMany({ where: { roomPlayerId: player.id } });
-
-      if (room.hostPlayerId === player.id) {
-        const active = await tx.roomPlayer.findMany({
-          where: { roomId: room.id, status: RoomPlayerStatus.ACTIVE },
-          select: { id: true, joinedAt: true },
+    const { roomId, playerId, newHostId, gameNotices } = await this.prisma.$transaction(
+      async (tx) => {
+        const room = await lockRoomByCode(tx, code);
+        const player = await this.requireActivePlayer(tx, room.id, userId);
+        const now = new Date();
+        await tx.roomPlayer.update({
+          where: { id: player.id },
+          data: { status: RoomPlayerStatus.LEFT, leftAt: now },
         });
-        const nextHost = await this.pickSuccessor(room.id, active, player.id);
-        await tx.room.update({
-          where: { id: room.id },
-          data: nextHost
-            ? { hostPlayerId: nextHost.id, lastActivityAt: now }
-            : { hostPlayerId: null, status: RoomStatus.CLOSED, lastActivityAt: now },
-        });
-        return { roomId: room.id, playerId: player.id, newHostId: nextHost?.id ?? null };
-      }
-      await tx.room.update({ where: { id: room.id }, data: { lastActivityAt: now } });
-      return { roomId: room.id, playerId: player.id, newHostId: null };
-    });
+        const gameNotices: GameNotice[] =
+          room.status === RoomStatus.IN_GAME
+            ? await this.gameOrchestrator.onPlayerLeftInTx(tx, room.id, player.id)
+            : [];
+        // A departed player's playlist is private data with no further use: games keep
+        // their own copy of every song.
+        await tx.playlist.deleteMany({ where: { roomPlayerId: player.id } });
+        const newHostId = await this.handOverHost(tx, room, player.id, now);
+        return { roomId: room.id, playerId: player.id, newHostId, gameNotices };
+      },
+    );
 
     await this.presence.remove(roomId, playerId);
     this.broadcaster.removePlayer(roomId, playerId);
     this.broadcaster.toRoom(roomId, 'room:player-left', { playerId });
     if (newHostId)
       this.broadcaster.toRoom(roomId, 'room:host-changed', { hostPlayerId: newHostId });
+    this.gameEvents.publish(roomId, gameNotices);
     this.logger.log(`Player ${playerId} left room ${roomId}`);
+  }
+
+  /** Moves the host role off a departing host; closes the room when nobody is left. */
+  private async handOverHost(
+    tx: Tx,
+    room: { id: string; hostPlayerId: string | null },
+    departingPlayerId: string,
+    now: Date,
+  ): Promise<string | null> {
+    if (room.hostPlayerId !== departingPlayerId) {
+      await tx.room.update({ where: { id: room.id }, data: { lastActivityAt: now } });
+      return null;
+    }
+    const active = await tx.roomPlayer.findMany({
+      where: { roomId: room.id, status: RoomPlayerStatus.ACTIVE },
+      select: { id: true, joinedAt: true },
+    });
+    const nextHost = await this.pickSuccessor(room.id, active, departingPlayerId);
+    await tx.room.update({
+      where: { id: room.id },
+      data: nextHost
+        ? { hostPlayerId: nextHost.id, lastActivityAt: now }
+        : { hostPlayerId: null, status: RoomStatus.CLOSED, lastActivityAt: now },
+    });
+    return nextHost?.id ?? null;
   }
 
   async updateSettings(
@@ -346,7 +367,11 @@ export class RoomsService {
       where: { id: roomId },
       select: ROOM_SNAPSHOT_SELECT,
     });
-    return toRoomSnapshotDto(room, viewerPlayerId, await this.presenceOf(roomId, room.players));
+    const [presence, game] = await Promise.all([
+      this.presenceOf(roomId, room.players),
+      this.gameQueries.snapshotFor(roomId, viewerPlayerId, db),
+    ]);
+    return toRoomSnapshotDto(room, viewerPlayerId, presence, game);
   }
 
   private presenceOf(
