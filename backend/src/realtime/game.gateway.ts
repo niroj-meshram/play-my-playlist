@@ -10,19 +10,38 @@ import {
 import {
   ErrorCode,
   GAME_NAMESPACE,
+  type GameAdvanceResponse,
+  type PlaybackReportResponse,
   type RoomSnapshotDto,
   type TimePingResponse,
+  type VoteSubmitResponse,
 } from '@pmp/shared';
 import { HttpStatus } from '@nestjs/common';
 import { AccessTokenVerifier } from '../common/auth/access-token.verifier.js';
 import { AppException } from '../common/errors/app.exception.js';
 import { createValidationPipe } from '../common/http/create-validation-pipe.js';
+import { GameOrchestrator } from '../games/game-orchestrator.service.js';
+import { VotingService } from '../games/voting.service.js';
 import { normalizeRoomCode } from '../rooms/room-code.pipe.js';
+import { CommandDedupeService } from './command-dedupe.service.js';
+import {
+  GameAdvanceDto,
+  GameRematchDto,
+  GameStartDto,
+  PlaybackReportDto,
+  VoteSubmitDto,
+} from './dto/game-commands.dto.js';
 import { RoomSubscribeDto } from './dto/room-subscribe.dto.js';
 import { TimePingDto } from './dto/time-ping.dto.js';
 import { RoomBroadcaster } from './room-broadcaster.service.js';
 import { RoomSessionService } from './room-session.service.js';
-import { playerChannel, roomChannel, type GameNamespace, type GameSocket } from './socket.types.js';
+import {
+  playerChannel,
+  roomChannel,
+  type GameNamespace,
+  type GameSocket,
+  type SocketSubscription,
+} from './socket.types.js';
 import { WsAckInterceptor } from './ws-ack.interceptor.js';
 import { WsRateLimitInterceptor } from './ws-rate-limit.interceptor.js';
 
@@ -40,6 +59,9 @@ export class GameGateway implements OnGatewayInit<GameNamespace>, OnGatewayDisco
     private readonly verifier: AccessTokenVerifier,
     private readonly sessions: RoomSessionService,
     private readonly broadcaster: RoomBroadcaster,
+    private readonly games: GameOrchestrator,
+    private readonly voting: VotingService,
+    private readonly dedupe: CommandDedupeService,
   ) {}
 
   afterInit(namespace: GameNamespace): void {
@@ -98,19 +120,80 @@ export class GameGateway implements OnGatewayInit<GameNamespace>, OnGatewayDisco
 
   @SubscribeMessage('sync:request')
   sync(@ConnectedSocket() socket: GameSocket): Promise<RoomSnapshotDto> {
-    const subscription = socket.data.subscription;
-    if (!subscription) {
-      throw new AppException(
-        ErrorCode.NOT_SUBSCRIBED,
-        'Subscribe to a room first.',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+    const subscription = requireSubscription(socket);
     return this.sessions.snapshot(subscription.roomCode, socket.data.userId);
+  }
+
+  /** Leader starts the game. A retried request (same clientRequestId) is not run twice. */
+  @SubscribeMessage('game:start')
+  startGame(
+    @ConnectedSocket() socket: GameSocket,
+    @MessageBody() dto: GameStartDto,
+  ): Promise<RoomSnapshotDto> {
+    const { roomId, roomCode, playerId } = requireSubscription(socket);
+    const { userId } = socket.data;
+    return this.dedupe.once(userId, dto.clientRequestId, async () => {
+      await this.games.start(roomId, playerId);
+      return this.sessions.snapshot(roomCode, userId);
+    });
+  }
+
+  @SubscribeMessage('game:advance')
+  advanceGame(
+    @ConnectedSocket() socket: GameSocket,
+    @MessageBody() dto: GameAdvanceDto,
+  ): Promise<GameAdvanceResponse> {
+    const { roomId, playerId } = requireSubscription(socket);
+    return this.games.advance(roomId, playerId, dto.expectedPhase, dto.roundNumber);
+  }
+
+  @SubscribeMessage('playback:report')
+  playbackReport(
+    @ConnectedSocket() socket: GameSocket,
+    @MessageBody() dto: PlaybackReportDto,
+  ): Promise<PlaybackReportResponse> {
+    const { roomId, playerId } = requireSubscription(socket);
+    return this.games.playbackReport(roomId, playerId, dto);
+  }
+
+  /** Idempotent through the vote's own clientRequestId, stored with the vote. */
+  @SubscribeMessage('vote:submit')
+  submitVote(
+    @ConnectedSocket() socket: GameSocket,
+    @MessageBody() dto: VoteSubmitDto,
+  ): Promise<VoteSubmitResponse> {
+    const { roomId, playerId } = requireSubscription(socket);
+    return this.voting.submit(roomId, playerId, dto);
+  }
+
+  /** Leader starts the next game. A retried request (same clientRequestId) is not run twice. */
+  @SubscribeMessage('game:rematch')
+  rematch(
+    @ConnectedSocket() socket: GameSocket,
+    @MessageBody() dto: GameRematchDto,
+  ): Promise<RoomSnapshotDto> {
+    const { roomId, roomCode, playerId } = requireSubscription(socket);
+    const { userId } = socket.data;
+    return this.dedupe.once(userId, dto.clientRequestId, async () => {
+      await this.games.rematch(roomId, playerId);
+      return this.sessions.snapshot(roomCode, userId);
+    });
   }
 
   @SubscribeMessage('time:ping')
   ping(@MessageBody() _dto: TimePingDto): TimePingResponse {
     return { serverTime: Date.now() };
   }
+}
+
+function requireSubscription(socket: GameSocket): SocketSubscription {
+  const subscription = socket.data.subscription;
+  if (!subscription) {
+    throw new AppException(
+      ErrorCode.NOT_SUBSCRIBED,
+      'Subscribe to a room first.',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  return subscription;
 }

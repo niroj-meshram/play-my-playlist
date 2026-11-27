@@ -1,4 +1,22 @@
 import type { ErrorCode } from './errors.js';
+import type {
+  GameAdvanceRequest,
+  GameAdvanceResponse,
+  GameFinishedEvent,
+  GamePhaseChangedEvent,
+  GameRematchRequest,
+  GameResultsEvent,
+  GameRoundRevealedEvent,
+  GameRoundStartedEvent,
+  GameStartedEvent,
+  GameStartRequest,
+  PlaybackReportRequest,
+  PlaybackReportResponse,
+  RoundViewerContextEvent,
+  VoteProgressEvent,
+  VoteSubmitRequest,
+  VoteSubmitResponse,
+} from './games.js';
 import type { MyPlaylistStatusEvent, PlaylistSubmissionUpdatedEvent } from './playlists.js';
 import type { RoomPlayerDto, RoomSettingsDto, RoomSnapshotDto } from './rooms.js';
 
@@ -72,6 +90,19 @@ export interface ClientToServerEvents {
   'room:subscribe': (payload: RoomSubscribeRequest, ack: AckCallback<RoomSnapshotDto>) => void;
   'sync:request': (payload: Record<string, never>, ack: AckCallback<RoomSnapshotDto>) => void;
   'time:ping': (payload: TimePingRequest, ack: AckCallback<TimePingResponse>) => void;
+  /** Leader only, in LOBBY. Ack returns the viewer's room snapshot with the new game. */
+  'game:start': (payload: GameStartRequest, ack: AckCallback<RoomSnapshotDto>) => void;
+  /** Leader only. Moves the game one phase forward; stale clicks are acknowledged as not applied. */
+  'game:advance': (payload: GameAdvanceRequest, ack: AckCallback<GameAdvanceResponse>) => void;
+  /** Leader only. Reports what the leader's YouTube player is doing. */
+  'playback:report': (
+    payload: PlaybackReportRequest,
+    ack: AckCallback<PlaybackReportResponse>,
+  ) => void;
+  /** Participant, in VOTING. Final once accepted. */
+  'vote:submit': (payload: VoteSubmitRequest, ack: AckCallback<VoteSubmitResponse>) => void;
+  /** Leader only, in SCOREBOARD or after a game. Finishes the game and starts the next one. */
+  'game:rematch': (payload: GameRematchRequest, ack: AckCallback<RoomSnapshotDto>) => void;
 }
 
 export interface ServerToClientEvents {
@@ -85,4 +116,16 @@ export interface ServerToClientEvents {
   'playlist:my-status': (event: MyPlaylistStatusEvent) => void;
   /** This connection was replaced by a newer tab or device of the same player. */
   'session:replaced': () => void;
+  'game:started': (event: GameStartedEvent) => void;
+  'game:phase-changed': (event: GamePhaseChangedEvent) => void;
+  'game:round-started': (event: GameRoundStartedEvent) => void;
+  /** The current round's song could not play and was swapped for another from the same playlist. */
+  'game:track-replaced': (event: GameRoundStartedEvent) => void;
+  /** Sent to each participant's private channel only. */
+  'round:viewer-context': (event: RoundViewerContextEvent) => void;
+  /** Counts only; individual votes stay private until the reveal. */
+  'vote:progress': (event: VoteProgressEvent) => void;
+  'game:round-revealed': (event: GameRoundRevealedEvent) => void;
+  'game:results': (event: GameResultsEvent) => void;
+  'game:finished': (event: GameFinishedEvent) => void;
 }

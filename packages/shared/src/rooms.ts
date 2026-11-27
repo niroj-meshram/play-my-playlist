@@ -1,4 +1,5 @@
 import type { AvatarId } from './auth.js';
+import type { GameSnapshotDto } from './games.js';
 import type { PlayerPresence } from './realtime.js';
 
 export const ROOM_CODE_LENGTH = 6;
@@ -62,4 +63,6 @@ export interface RoomSnapshotDto {
   players: RoomPlayerDto[];
   /** The requesting member's own player ID. */
   viewerPlayerId: string;
+  /** The room's current or most recent game as this viewer may see it; `null` before the first game. */
+  game: GameSnapshotDto | null;
 }

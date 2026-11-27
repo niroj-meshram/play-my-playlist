@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { GamesModule } from '../games/games.module.js';
 import { RealtimeCoreModule } from '../realtime/realtime-core.module.js';
 import { HostMigrationService } from './host-migration.service.js';
 import { RoomCodeGenerator } from './room-code.generator.js';
@@ -6,7 +7,7 @@ import { RoomsController } from './rooms.controller.js';
 import { RoomsService } from './rooms.service.js';
 
 @Module({
-  imports: [RealtimeCoreModule],
+  imports: [RealtimeCoreModule, GamesModule],
   controllers: [RoomsController],
   providers: [RoomsService, HostMigrationService, RoomCodeGenerator],
   exports: [RoomsService, HostMigrationService],

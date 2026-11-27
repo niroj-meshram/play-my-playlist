@@ -78,6 +78,7 @@ model Room {
   players        RoomPlayer[]    @relation("RoomPlayers")
   playlists      Playlist[]
   playlistTracks PlaylistTrack[]
+  games          Game[]
 
   @@index([status, lastActivityAt])
 }
@@ -93,11 +94,12 @@ model RoomPlayer {
   joinedAt    DateTime         @default(now())
   leftAt      DateTime?
 
-  room       Room      @relation("RoomPlayers", fields: [roomId], references: [id], onDelete: Cascade)
-  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  hostedRoom Room?     @relation("RoomHost")
+  room       Room              @relation("RoomPlayers", fields: [roomId], references: [id], onDelete: Cascade)
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hostedRoom Room?             @relation("RoomHost")
   /// PRIVATE: never select this relation on a public read path except for `status`.
   playlist   Playlist?
+  games      GameParticipant[]
 
   @@unique([roomId, userId])
   @@index([roomId, status, joinedAt])
@@ -115,6 +117,8 @@ enum PlaylistTrackStatus {
   PLAYABLE
   /// Already PLAYABLE in another READY playlist of the room when this one was ingested (D6).
   DUPLICATE
+  /// The leader's player reported it cannot be embedded or no longer exists (YouTube error 100/101/150).
+  UNPLAYABLE
 }
 
 /// A player's submission. The roomPlayerId link, sourceUrl and title are PRIVATE until the reveal.
@@ -140,6 +144,7 @@ model Playlist {
   room       Room            @relation(fields: [roomId], references: [id], onDelete: Cascade)
   roomPlayer RoomPlayer      @relation(fields: [roomPlayerId], references: [id], onDelete: Cascade)
   tracks     PlaylistTrack[]
+  gameUses   GamePlaylist[]
 
   @@index([roomId, status])
   @@index([status, processingStartedAt])
@@ -163,4 +168,162 @@ model PlaylistTrack {
 
   @@unique([playlistId, youtubeVideoId])
   @@index([roomId, youtubeVideoId])
+}
+
+enum GamePhase {
+  PLAYING
+  DISCUSSION
+  VOTING
+  REVEAL
+  SCOREBOARD
+  FINISHED
+}
+
+enum GameRoundStatus {
+  PENDING
+  ACTIVE
+  REVEALED
+}
+
+enum GameEndReason {
+  COMPLETED
+  NOT_ENOUGH_PLAYERS
+  OUT_OF_SONGS
+}
+
+/// One game in a room (rematches create new rows). Phase changes are compare-and-set on
+/// (phase, stateVersion), so every transition happens exactly once (docs/architecture.md §4).
+/// A partial unique index (migration SQL) allows only one non-FINISHED game per room.
+model Game {
+  id               String         @id @default(uuid()) @db.Uuid
+  roomId           String         @db.Uuid
+  gameNumber       Int            @db.SmallInt
+  phase            GamePhase
+  currentRound     Int            @db.SmallInt
+  totalRounds      Int            @db.SmallInt
+  stateVersion     Int            @default(0)
+  phaseStartedAt   DateTime       @default(now())
+  settingsSnapshot Json
+  startedAt        DateTime       @default(now())
+  finishedAt       DateTime?
+  endReason        GameEndReason?
+
+  room         Room              @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  participants GameParticipant[]
+  playlists    GamePlaylist[]
+  rounds       GameRound[]
+
+  @@unique([roomId, gameNumber])
+}
+
+/// The players of a game, fixed at start. Score columns are written from M5 on.
+model GameParticipant {
+  id             String @id @default(uuid()) @db.Uuid
+  gameId         String @db.Uuid
+  roomPlayerId   String @db.Uuid
+  totalScore     Int    @default(0)
+  correctGuesses Int    @default(0) @db.SmallInt
+  ownerPoints    Int    @default(0)
+
+  game          Game          @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  roomPlayer    RoomPlayer    @relation(fields: [roomPlayerId], references: [id], onDelete: Cascade)
+  /// PRIVATE until the reveal of a round from this playlist.
+  playlist      GamePlaylist?
+  votesCast     Vote[]        @relation("VotesCast")
+  votesReceived Vote[]        @relation("VotesReceived")
+  roundScores   RoundScore[]
+
+  @@unique([gameId, roomPlayerId])
+}
+
+/// A participant's playlist as used in one game, under a CSPRNG-shuffled public label.
+/// The owner link is PRIVATE: public read paths select only `publicLabel` before the reveal.
+model GamePlaylist {
+  id                 String  @id @default(uuid()) @db.Uuid
+  gameId             String  @db.Uuid
+  ownerParticipantId String  @db.Uuid
+  /// The lobby playlist the songs came from; cleared if that playlist is deleted.
+  sourcePlaylistId   String? @db.Uuid
+  publicLabel        String  @db.VarChar(16)
+
+  game           Game            @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  owner          GameParticipant @relation(fields: [ownerParticipantId], references: [id], onDelete: Cascade)
+  sourcePlaylist Playlist?       @relation(fields: [sourcePlaylistId], references: [id], onDelete: SetNull)
+  rounds         GameRound[]
+
+  @@unique([gameId, publicLabel])
+  @@unique([ownerParticipantId])
+}
+
+/// One round. The song is copied in, so the game no longer depends on the lobby playlist.
+model GameRound {
+  id             String          @id @default(uuid()) @db.Uuid
+  gameId         String          @db.Uuid
+  roundNumber    Int             @db.SmallInt
+  gamePlaylistId String          @db.Uuid
+  status         GameRoundStatus @default(PENDING)
+  youtubeVideoId String          @db.VarChar(16)
+  title          String          @db.VarChar(200)
+  artist         String?         @db.VarChar(200)
+  thumbnailUrl   String?         @db.VarChar(512)
+  durationSec    Int
+  startedAt      DateTime?
+  revealedAt     DateTime?
+
+  game         Game         @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  gamePlaylist GamePlaylist @relation(fields: [gamePlaylistId], references: [id], onDelete: Cascade)
+  votes        Vote[]
+  scores       RoundScore[]
+
+  @@unique([gameId, roundNumber])
+  @@unique([gameId, youtubeVideoId])
+}
+
+// ─── Voting & scoring ────────────────────────────────────────────────────────
+
+enum RoundScoreReason {
+  /// Nobody guessed the owner: the owner scores.
+  OWNER_UNGUESSED
+  /// Exactly one participant guessed correctly.
+  SOLE_CORRECT
+  /// Two or more participants guessed correctly.
+  SHARED_CORRECT
+  /// The owner was offline when voting closed (D12): 0 points, kept for audit and the reveal.
+  OWNER_OFFLINE
+}
+
+/// One vote per participant per round, final once inserted. PRIVATE until the round is
+/// REVEALED: only the count is public while voting is open (docs/architecture.md §6).
+/// A CHECK constraint (migration SQL) blocks self-votes.
+model Vote {
+  id              String   @id @default(uuid()) @db.Uuid
+  roundId         String   @db.Uuid
+  voterId         String   @db.Uuid
+  suspectId       String   @db.Uuid
+  /// Null until the reveal, which sets it inside the scoring transaction.
+  isCorrect       Boolean?
+  /// A retry with the same ID returns the original ack; a different ID is ALREADY_VOTED.
+  clientRequestId String   @db.Uuid
+  createdAt       DateTime @default(now())
+
+  round   GameRound       @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  voter   GameParticipant @relation("VotesCast", fields: [voterId], references: [id], onDelete: Cascade)
+  suspect GameParticipant @relation("VotesReceived", fields: [suspectId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, voterId])
+}
+
+/// Points awarded in one round: the audit trail behind the GameParticipant totals.
+/// UNIQUE (roundId, participantId) makes score allocation idempotent.
+model RoundScore {
+  id            String           @id @default(uuid()) @db.Uuid
+  roundId       String           @db.Uuid
+  participantId String           @db.Uuid
+  points        Int              @db.SmallInt
+  reason        RoundScoreReason
+
+  round       GameRound       @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  participant GameParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, participantId])
 }

@@ -1,7 +1,7 @@
 # Play My Playlist — Architecture
 
-Status: **Approved — M0–M3 done (M2 includes a minimal lobby UI pulled forward from M6); next: M4**
-Last updated: 2026-11-17
+Status: **Approved — M0–M5 done (M2, M4 and M5 include minimal lobby and game screens pulled forward from M6); next: M6**
+Last updated: 2026-11-19
 
 This document is the source of truth for architecture and game rules.
 Where it conflicts with `PROJECT_PROMPT.md`, this document wins (see §1 Decision log).
@@ -104,9 +104,9 @@ erDiagram
   Game ||--o{ GamePlaylist : "uses (anon label)"
   Game ||--o{ GameRound : has
   RoomPlayer ||--o{ GameParticipant : "plays as"
-  Playlist ||--o{ GamePlaylist : "labelled as"
+  GameParticipant ||--o| GamePlaylist : "owns (PRIVATE)"
+  Playlist |o--o{ GamePlaylist : "songs drawn from (SetNull)"
   GamePlaylist ||--o{ GameRound : "selected in"
-  PlaylistTrack ||--o{ GameRound : "played in"
   GameRound ||--o{ Vote : receives
   GameRound ||--o{ RoundScore : awards
   GameParticipant ||--o{ Vote : "casts (voter)"
@@ -119,11 +119,11 @@ erDiagram
   Room { uuid id PK; string code UK; uuid hostPlayerId FK "nullable, UK"; enum status "LOBBY|IN_GAME|CLOSED"; enum visibility "INVITE_ONLY"; int maxPlayers; int roundCount; ts lastActivityAt }
   RoomPlayer { uuid id PK; uuid roomId FK; uuid userId FK; string displayName; string avatarId; enum status "ACTIVE|LEFT"; ts joinedAt; ts leftAt }
   Playlist { uuid id PK; uuid roomPlayerId FK "UK = owner"; uuid roomId FK; string youtubePlaylistId; string sourceUrl "PRIVATE"; string title "PRIVATE"; enum status "PROCESSING|READY|REJECTED"; string rejectionCode; int playableCount; int duplicateCount; uuid submissionId; int attempts; ts submittedAt; ts processingStartedAt; ts readyAt }
-  PlaylistTrack { uuid id PK; uuid playlistId FK; uuid roomId FK "denormalised"; string youtubeVideoId; string title; string artist; string thumbnailUrl; int durationSec; int position; enum status "PLAYABLE|DUPLICATE" }
-  Game { uuid id PK; uuid roomId FK; int gameNumber; enum phase; int currentRound; int totalRounds; int stateVersion; ts phaseStartedAt; json settingsSnapshot; ts startedAt; ts finishedAt; enum endReason }
+  PlaylistTrack { uuid id PK; uuid playlistId FK; uuid roomId FK "denormalised"; string youtubeVideoId; string title; string artist; string thumbnailUrl; int durationSec; int position; enum status "PLAYABLE|DUPLICATE|UNPLAYABLE" }
+  Game { uuid id PK; uuid roomId FK; int gameNumber; enum phase; int currentRound; int totalRounds; int stateVersion; ts phaseStartedAt; json settingsSnapshot; ts startedAt; ts finishedAt; enum endReason "COMPLETED|NOT_ENOUGH_PLAYERS|OUT_OF_SONGS" }
   GameParticipant { uuid id PK; uuid gameId FK; uuid roomPlayerId FK; int totalScore; int correctGuesses; int ownerPoints }
-  GamePlaylist { uuid id PK; uuid gameId FK; uuid playlistId FK; string publicLabel }
-  GameRound { uuid id PK; uuid gameId FK; int roundNumber; uuid gamePlaylistId FK; uuid trackId FK; enum status "PENDING|ACTIVE|REVEALED"; ts startedAt; ts revealedAt }
+  GamePlaylist { uuid id PK; uuid gameId FK; uuid ownerParticipantId FK "PRIVATE, UK"; uuid sourcePlaylistId FK "nullable"; string publicLabel }
+  GameRound { uuid id PK; uuid gameId FK; int roundNumber; uuid gamePlaylistId FK; enum status "PENDING|ACTIVE|REVEALED"; string youtubeVideoId; string title; string artist; string thumbnailUrl; int durationSec; ts startedAt; ts revealedAt }
   Vote { uuid id PK; uuid roundId FK; uuid voterId FK; uuid suspectId FK; bool isCorrect; uuid clientRequestId; ts createdAt }
   RoundScore { uuid id PK; uuid roundId FK; uuid participantId FK; int points; enum reason "OWNER_UNGUESSED|SOLE_CORRECT|SHARED_CORRECT" }
   RoomMessage { uuid id PK; uuid roomId FK; uuid roomPlayerId FK; uuid gameId FK; string body; ts createdAt }
@@ -141,13 +141,16 @@ erDiagram
 | Partial UNIQUE: one non-FINISHED `Game` per room (raw SQL in migration) | Two concurrent starts cannot create two games |
 | `Game (roomId, gameNumber)` UNIQUE | Rematch numbering |
 | `GameParticipant (gameId, roomPlayerId)` UNIQUE | Participants fixed at game start |
-| `GamePlaylist (gameId, publicLabel)`, `(gameId, playlistId)` UNIQUE | |
-| `GameRound (gameId, roundNumber)`, `(gameId, trackId)` UNIQUE | No repeated song within a game |
+| `GamePlaylist (gameId, publicLabel)`, `(ownerParticipantId)` UNIQUE | One anonymous label per participant |
+| `GameRound (gameId, roundNumber)`, `(gameId, youtubeVideoId)` UNIQUE | No repeated song within a game |
 | `Vote (roundId, voterId)` UNIQUE + `CHECK (voterId <> suspectId)` | One vote per player per round; self-votes blocked by the DB |
 | `RoundScore (roundId, participantId)` UNIQUE | Idempotent score allocation |
 | `RoomMessage (roomId, createdAt)` INDEX | Chat history |
 
-- Deletes cascade under `Room`. `Room.hostPlayerId` uses `SetNull`. Votes and scores use `Restrict`.
+- Deletes cascade under `Room`. `Room.hostPlayerId` uses `SetNull`. Votes and scores cascade too, so purging an expired room (§13) removes its whole history. The application never deletes a participant, and only drops rounds that are `PENDING` or still `PLAYING` (which have no votes), so the cascade never touches a live game's votes or scores.
+- `Vote.isCorrect` stays `NULL` until the reveal, which sets it in the scoring transaction. A `RoundScore` row with `OWNER_OFFLINE` and 0 points records D12, so every revealed round has at least one score row.
+- `CHECK (voterId <> suspectId)` on `Vote` and `CHECK (points >= 0)` on `RoundScore` are hand-written in the migration SQL.
+- **Games copy each round's song** (video ID, title, artist, thumbnail, duration) instead of pointing at `PlaylistTrack`, and `GamePlaylist` points at the owning `GameParticipant`. Lobby playlists can therefore be replaced between games, and a leaver's playlist deleted mid-game, without touching game history. `GamePlaylist.sourcePlaylistId` (`SetNull`) is used only to draw replacement songs.
 - All IDs are **UUIDv4** (never time-ordered), so IDs cannot leak insertion order.
 
 ---
@@ -183,10 +186,12 @@ There are **no phase timers**. Phases advance on leader actions or the all-voted
 | VOTING → REVEAL | all required voters have voted (§6), or leader `game:advance` ("Close voting") | phase/version match | Mark `isCorrect`, write `RoundScore`s, update totals |
 | REVEAL → PLAYING | leader `game:advance` | `currentRound < totalRounds` | Activate the next round |
 | REVEAL → SCOREBOARD | leader `game:advance` | `currentRound = totalRounds` | Compute awards |
-| SCOREBOARD → FINISHED | leader `game:advance` or `game:rematch` | — | Set `finishedAt` |
-| FINISHED → LOBBY | leader `game:rematch` | — | Room back to LOBBY; playlists kept |
+| PLAYING/DISCUSSION/VOTING/REVEAL → SCOREBOARD | a leave leaves fewer than 3 participants, or the last round has no playable song left | — | `endReason` = `NOT_ENOUGH_PLAYERS` / `OUT_OF_SONGS` |
+| SCOREBOARD → FINISHED | leader `game:advance`, or `game:rematch` | — | Set `finishedAt`; **room back to LOBBY**, playlists kept, so the host can start another game (`gameNumber + 1`). `game:rematch` finishes the game and starts the next one in the same transaction; if the new game cannot start (e.g. too few players), nothing changes. |
 
-**Exactly-once transitions.** Every transition is a compare-and-set:
+**Serialisation.** Every game command (start, advance, playback report) and every leave runs in one transaction that first locks the room row, so they never interleave within a room.
+
+**Exactly-once transitions.** On top of that, every transition is a compare-and-set:
 `updateMany({ where: { id, phase: from, stateVersion: v }, data: { phase: to, stateVersion: v + 1 } })`.
 A row count of 0 means another trigger already won, and the call is a safe no-op.
 Broadcasts are emitted only **after commit**.
@@ -196,10 +201,12 @@ Broadcasts are emitted only **after commit**.
 ## 5. Game rules
 
 ### Round plan (balanced random)
-1. At game start, the playlists of all participants are shuffled with a CSPRNG (Fisher–Yates using `crypto.randomInt`).
-2. The rotation repeats (re-shuffled each cycle) until there are `roundCount` (default 10) slots. The same playlist never plays twice in a row when more than one playlist exists.
-3. Each slot draws a random unused `PLAYABLE` track from its playlist.
-4. If the leader's player reports a video as unplayable, the server swaps in another unused track **from the same playlist**.
+1. At game start, the playlists of all participants are shuffled with a CSPRNG (Fisher–Yates using `crypto.randomInt`). Labels ("Playlist A", …) follow that shuffle.
+2. **Rounds = min(`roundCount`, playlists × smallest playlist's playable songs)**, so every playlist keeps its exact fair share. Example: 3 players with 5 songs each and 20 rounds → 15 rounds.
+3. The rotation repeats (re-shuffled each cycle) until all slots are filled. The same playlist never plays twice in a row when more than one playlist exists.
+4. Each slot draws a random unused `PLAYABLE` track from its playlist. The full plan, songs included, is stored privately at start.
+5. If the leader's player reports a video as unplayable, the server swaps in another unused track **from the same playlist** (YouTube errors 100/101/150 also mark the track `UNPLAYABLE`). Reports carry the `videoId`, so a late report about an already-replaced song is ignored. If that playlist has nothing left, the round is dropped, later rounds are renumbered, and the game moves on (or ends with `OUT_OF_SONGS`).
+6. **Mid-game leave:** the leaver's upcoming rounds go to the remaining playlists with unused songs (fewest rounds first, avoiding back-to-back repeats); rounds nobody can fill are dropped. A round already in progress finishes normally. If fewer than 3 participants remain, the game goes to SCOREBOARD with `NOT_ENOUGH_PLAYERS`.
 
 Example: with 4 players and 10 rounds, the split is 3/3/2/2 in an unpredictable order.
 
@@ -233,13 +240,16 @@ Final ranking (ties share a rank), most correct guesses, and best bluffer (most 
 - During voting, clients only see `{votesIn, expected}`. Since everyone votes, the count reveals nothing about the owner.
 
 ### Concurrency
-- Each vote runs in a transaction:
-  1. `SELECT … FOR SHARE` on the game row.
-  2. Check `phase = VOTING`, round number and candidate validity.
-  3. Insert the vote.
-- The `VOTING → REVEAL` `UPDATE` takes the row lock, so a vote and the reveal serialize. Either the vote commits first and counts, or it sees `REVEAL` and is rejected.
-- `UNIQUE (roundId, voterId)` makes double submits fail safely. A retry with the same `clientRequestId` returns the original acknowledgement.
-- Scoring runs inside the same transaction as the transition, and `UNIQUE (roundId, participantId)` on `RoundScore` makes it idempotent.
+- Each vote runs in a transaction (`VotingService`):
+  1. Lock the room row (`SELECT … FOR UPDATE`), like every other game command.
+  2. If the voter already voted this round: the same `clientRequestId` returns the original acknowledgement (even after voting closed); another ID is `ALREADY_VOTED`.
+  3. Check `phase = VOTING`, round number and candidate validity (`VOTING_CLOSED`, `INVALID_SUSPECT`).
+  4. Insert the vote, then re-check completion; the last vote moves the game to REVEAL in the same transaction.
+- Because the reveal also holds the room lock, a vote and the reveal serialize. Either the vote commits first and counts, or it sees `REVEAL` and is rejected.
+- `UNIQUE (roundId, voterId)` and the self-vote `CHECK` back the rules up in the database.
+- Completion is re-checked after every vote, every player leave, every player going AWAY and every player coming back (`GameOrchestrator.closeVotingIfCompleteInTx`). With nobody online, voting never closes by itself.
+- Scoring (`RoundScorer`) runs inside the same transaction as the VOTING → REVEAL transition, which is compare-and-set, and `UNIQUE (roundId, participantId)` on `RoundScore` rejects any second allocation.
+- A game that ends early from VOTING (`NOT_ENOUGH_PLAYERS`) does not score that round.
 
 ---
 
@@ -277,13 +287,12 @@ Final ranking (ties share a rank), most correct guesses, and best bluffer (most 
 | `POST /rooms` `{settings?}` | JWT | The creator becomes host/leader. Returns `RoomSnapshotDto`; the frontend builds the invite URL (`/join/{code}`). Settings: `maxPlayers` 3–10 (default 5), `roundCount` 5–20 (default 10). |
 | `GET /rooms/:code/preview` | JWT | `{code, status, playerCount, maxPlayers, joinable}`. Unknown, closed and malformed codes return the same 404. Full or in-game rooms return `joinable: false` so invited friends see why. Rate-limited. |
 | `POST /rooms/:code/join` `{displayName?, avatarId?}` | JWT | Idempotent. Room row locked, so capacity holds under concurrent joins. Display names are unique per room (case-insensitive). Rejected during a game unless already a participant (D9). |
-| `POST /rooms/:code/leave` | member | LOBBY only until M4. A departing host is replaced by the longest-present player; the room closes when empty. |
-| `GET /rooms/:code` | member | `RoomSnapshotDto` (same payload as socket `room:state`) |
+| `POST /rooms/:code/leave` | member | Also during a game (§5, mid-game leave). A departing host is replaced by the longest-present player; the room closes when empty. |
+| `GET /rooms/:code` | member | `RoomSnapshotDto` (same payload as socket `room:state`). Includes `game: GameSnapshotDto \| null`: the latest game as this viewer may see it (public state, the viewer's own `isYourPlaylist`, the latest reveal). |
 | `PATCH /rooms/:code/settings` | host, LOBBY | |
 | `PUT /rooms/:code/playlist` `{url}` | member, LOBBY | 202 `{status: PROCESSING}`. The result arrives via socket. 400 `INVALID_PLAYLIST_URL` / `UNSUPPORTED_PLAYLIST`; 503 `QUOTA_EXHAUSTED` / `YOUTUBE_UNAVAILABLE` (no key configured). Rate-limited to 6/min per player (players at a party often share one IP), with a 30/min per-IP ceiling. |
 | `GET /rooms/:code/playlist` | member | **Own** submission only: `{playlist: MyPlaylistDto \| null}` |
 | `DELETE /rooms/:code/playlist` | member, LOBBY | 204 |
-| `GET /rooms/:code/game` | member | Current `GameSnapshotDto` (public state + viewer context + live scoreboard) |
 | `GET /games/:id/results` | participant, FINISHED | Round history, reveals, ranking, awards |
 | `GET /health`, `GET /health/ready` | — | Liveness, plus readiness checks for PostgreSQL and Redis |
 
@@ -305,11 +314,11 @@ Error envelope: `{ error: { code, message, details? }, requestId }`. Error codes
 | `room:subscribe` | `{roomCode}` | member. Ack returns the full snapshot (also after reconnect). |
 | `sync:request` | `{}` | member. Ack returns the full snapshot. |
 | `time:ping` | `{clientSentAt}` | Ack returns `{serverTime}` |
-| `game:start` | `{clientRequestId}` | leader, LOBBY |
-| `game:advance` | `{expectedPhase, roundNumber}` | leader. Stop song / open voting / close voting / next song / final results / finish. A stale `expectedPhase` is ignored. |
-| `game:rematch` | `{clientRequestId}` | leader, SCOREBOARD or FINISHED |
-| `playback:report` | `{roundNumber, state: 'PLAYING'\|'ENDED'\|'ERROR', ytErrorCode?}` | **leader only** |
-| `vote:submit` | `{roundNumber, suspectPlayerId, clientRequestId}` | participant, VOTING |
+| `game:start` | `{clientRequestId}` | leader, LOBBY; ≥3 players, all playlists READY. Ack returns the room snapshot with the game. A retry with the same `clientRequestId` returns the first result. |
+| `game:advance` | `{expectedPhase, roundNumber}` | leader. Stop song / open voting / close voting / next song / final results / finish. Ack `{applied}`; a stale `expectedPhase` or `roundNumber` is acknowledged with `applied: false`. |
+| `game:rematch` | `{clientRequestId}` | leader, SCOREBOARD or after a game. Ack returns the room snapshot with the new game. A retry with the same `clientRequestId` returns the first result. |
+| `playback:report` | `{roundNumber, videoId, state: 'PLAYING'\|'ENDED'\|'ERROR', ytErrorCode?}` | **leader only**, PLAYING. Ignored unless `videoId` is the current song. Ack `{applied}`. |
+| `vote:submit` | `{roundNumber, suspectPlayerId, clientRequestId}` | participant still in the room, VOTING. Ack `{roundNumber, suspectPlayerId}`. Errors: `VOTING_CLOSED`, `ALREADY_VOTED`, `INVALID_SUSPECT` (self, unknown, left or offline), `NOT_GAME_PARTICIPANT`. |
 | `chat:send` | `{body ≤ 300, clientRequestId}` | member, rate-limited, sanitised |
 
 ### Server → Client
@@ -323,22 +332,23 @@ Error envelope: `{ error: { code, message, details? }, requestId }`. Error codes
 | `room:settings-updated` | room | |
 | `playlist:submission-updated` | room | `{playerId, ready}` only, and only when `ready` changes. Snapshots carry the same flag as `RoomPlayerDto.playlistReady`. |
 | `playlist:my-status` | **player** | `{playlist: {status, sourceUrl, title, playableCount, duplicateCount, rejectionCode, submittedAt} \| null}` (`null` after removal) |
-| `game:started` | room | `{gameId, totalRounds, participants, playlistLabels}` |
-| `game:phase-changed` | room | `{phase, roundNumber, phaseStartedAt}` |
-| `game:round-started` | room | `{roundNumber, playlistLabel, track:{videoId,title,artist,thumbnailUrl}}` |
+| `game:started` | room | `{gameNumber, totalRounds, playlistLabels}`. Clients resync to get their private context. |
+| `game:phase-changed` | room | `{phase, roundNumber, totalRounds, phaseStartedAt, endReason}`. Also sent with the same phase when `totalRounds` shrinks. `endReason` is set from SCOREBOARD on. |
+| `game:round-started` | room | `{round: {roundNumber, playlistLabel, track:{videoId,title,artist,thumbnailUrl,durationSec}}}` |
 | `game:track-replaced` | room | Same shape as `round-started` |
-| `round:viewer-context` | **player** | `{isYourPlaylist, candidates[]}` |
-| `vote:progress` | room | `{votesIn, expected}` |
-| `game:round-revealed` | room | `{roundNumber, owner, votes[{voter,suspect,correct}], roundScores, scoreboard}` |
-| `game:finished` | room | `{ranking, awards}` |
+| `round:viewer-context` | **player** | `{roundNumber, viewer: {isYourPlaylist, candidates: [{playerId, displayName, avatarId}], myVote}}`. Candidates are every other participant still in the room (the same list for everyone but the viewer); clients grey out AWAY ones from live presence. |
+| `vote:progress` | room | `{roundNumber, votesIn, expected}`. Sent when voting opens and whenever the counts change. `expected` = online participants plus anyone who already voted. |
+| `game:round-revealed` | room | `{reveal: {roundNumber, playlistLabel, ownerPlayerId, ownerDisplayName, votes: [{voterPlayerId, suspectPlayerId, isCorrect}], points: [{playerId, points, reason}]}, scoreboard}` |
+| `game:results` | room | `{results: {ranking, awards: {topGuesser, bestBluffer}}}`, when the game reaches SCOREBOARD. Awards are shared on ties and `null` when nobody earned them. |
+| `game:finished` | room | `{endReason, results}` |
 | `chat:message` | room | `{id, playerId, body, createdAt}` |
 | `session:replaced` | socket | Another tab took over this player. The old socket is then disconnected and does not reconnect by itself. |
 
 Command errors are acknowledged as `{ok:false, error:{code, message}}` with the same codes as REST (`ROOM_NOT_FOUND` for non-members, unknown and malformed codes alike; `VALIDATION_FAILED`; `RATE_LIMITED`; `NOT_SUBSCRIBED` for `sync:request` before `room:subscribe`). A rejected handshake fails with `connect_error` and `data.code = 'UNAUTHORIZED'`.
 
-Lobby events (M2) carry no `stateVersion`: their patches are idempotent and every (re)connect or tab refocus resyncs the full snapshot. Game events add `stateVersion` with `Game.stateVersion` in M4.
+Lobby events (M2) carry no `stateVersion`: their patches are idempotent and every (re)connect or tab refocus resyncs the full snapshot. Every game event carries `{stateVersion, serverTime}` from `Game.stateVersion`. One change can emit several events with the same version (e.g. phase + song + private context), so clients apply equal versions, drop older ones, and call `sync:request` when a version is skipped.
 
-The live scoreboard (D1) is part of every snapshot and updates only in `game:round-revealed`, never during voting.
+The live scoreboard (D1) is part of every snapshot and updates only in `game:round-revealed`, never during voting. Snapshots also carry `voteProgress` (VOTING only), the viewer's `candidates` and `myVote`, and `results` (SCOREBOARD and FINISHED). Ranking: total score, ties share a rank (1, 1, 3); participants who left stay listed with `hasLeft`.
 
 ---
 
@@ -379,8 +389,8 @@ Enforced in layers:
 1. **Query projection.** Public read paths never `select` `Playlist.roomPlayerId`, `sourceUrl` or `title`.
 2. **Explicit mappers** (`toPublicRoundDto`, …) copy allowlisted fields only. Entities are never spread or serialised directly.
 3. **Typed emission.** All emits go through `RoomBroadcaster`, which is typed against `ServerToClientEvents`.
-4. **Reveal gate.** Owner and vote details are read only when `round.status = REVEALED`.
-5. **Leak tests.** In a 5-client test, every pre-reveal payload is recorded and checked for owner identifiers.
+4. **Reveal gate.** Owner and vote details are read only when `round.status = REVEALED` (`loadReveal` in `games/game.mapper.ts`). Before that, game reads select only the anonymous `publicLabel`; the viewer's own `isYourPlaylist` comes from a count query that returns a boolean, never the owner, and is sent only on the viewer's private channel.
+5. **Leak tests.** In a 5-client test with votes cast, every pre-reveal public event is checked for player identifiers, and every viewer's snapshot minus its own `viewer` context must be identical for owner and non-owners. Individual votes are read only through the reveal gate; before it, a viewer learns only their own `myVote`.
 
 | Leak vector | Mitigation |
 |---|---|

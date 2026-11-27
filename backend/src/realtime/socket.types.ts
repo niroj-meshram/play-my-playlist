@@ -1,11 +1,17 @@
 import type { ClientToServerEvents, ServerToClientEvents } from '@pmp/shared';
 import type { Namespace, Socket } from 'socket.io';
 
+export interface SocketSubscription {
+  roomId: string;
+  roomCode: string;
+  playerId: string;
+}
+
 /** Per-connection state. `userId` comes only from the verified handshake token. */
 export interface SocketData {
   userId: string;
   /** Set by `room:subscribe`; a socket follows one room at a time. */
-  subscription?: { roomId: string; roomCode: string; playerId: string };
+  subscription?: SocketSubscription;
   rate?: { windowStart: number; count: number };
 }
 
