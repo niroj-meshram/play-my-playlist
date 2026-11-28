@@ -37,7 +37,7 @@ export class PlaylistsService {
    */
   async submit(code: string, userId: string, url: string): Promise<SubmitPlaylistResponse> {
     const youtubePlaylistId = parsePlaylistId(url);
-    await this.assertCanFetch(youtubePlaylistId);
+    await this.assertCanFetch();
 
     const now = new Date();
     const submissionId = randomUUID();
@@ -113,7 +113,7 @@ export class PlaylistsService {
   }
 
   /** Fails fast instead of queueing work that cannot succeed. */
-  private async assertCanFetch(youtubePlaylistId: string): Promise<void> {
+  private async assertCanFetch(): Promise<void> {
     if (!this.fetcher.isConfigured()) {
       throw new AppException(
         ErrorCode.YOUTUBE_UNAVAILABLE,
@@ -121,8 +121,8 @@ export class PlaylistsService {
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
-    const cached = await this.fetcher.isCached(youtubePlaylistId);
-    if (!cached && !(await this.quota.hasBudget(SUBMISSION_QUOTA_ESTIMATE))) {
+    // Every submission reads YouTube afresh, so every one needs quota.
+    if (!(await this.quota.hasBudget(SUBMISSION_QUOTA_ESTIMATE))) {
       throw new AppException(
         ErrorCode.QUOTA_EXHAUSTED,
         "Today's YouTube limit for this game server has been reached. Please try again tomorrow.",

@@ -1,6 +1,11 @@
 'use client';
 
-import { ROOM_LIMITS, type RoomSettingsDto, type UpdateRoomSettingsRequest } from '@pmp/shared';
+import {
+  PlaybackMode,
+  ROOM_LIMITS,
+  type RoomSettingsDto,
+  type UpdateRoomSettingsRequest,
+} from '@pmp/shared';
 import { useMutation } from '@tanstack/react-query';
 import { Label } from '@/components/ui/label';
 import { roomApi } from '../room-api';
@@ -10,6 +15,19 @@ const range = (from: number, to: number) =>
   Array.from({ length: to - from + 1 }, (_, i) => from + i);
 const PLAYER_OPTIONS = range(ROOM_LIMITS.minPlayers, ROOM_LIMITS.maxPlayers);
 const ROUND_OPTIONS = range(ROOM_LIMITS.minRoundCount, ROOM_LIMITS.maxRoundCount);
+
+const PLAYBACK_OPTIONS: { value: PlaybackMode; label: string; hint: string }[] = [
+  {
+    value: PlaybackMode.LEADER_ONLY,
+    label: 'Same room',
+    hint: "Everyone is together: the music plays on the host's device only.",
+  },
+  {
+    value: PlaybackMode.EVERY_DEVICE,
+    label: 'Remote',
+    hint: 'Everyone plays the song on their own device, in sync.',
+  },
+];
 
 const selectClass =
   'h-9 rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-60 dark:bg-input/30';
@@ -67,6 +85,26 @@ export function RoomSettings({ roomCode, settings, playerCount, isHost }: RoomSe
             ))}
           </select>
         </div>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="playback-mode">Where the music plays</Label>
+        <select
+          id="playback-mode"
+          className={selectClass}
+          value={settings.playbackMode}
+          disabled={disabled}
+          aria-describedby="playback-mode-hint"
+          onChange={(e) => mutation.mutate({ playbackMode: e.target.value as PlaybackMode })}
+        >
+          {PLAYBACK_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <p id="playback-mode-hint" className="text-xs text-muted-foreground">
+          {PLAYBACK_OPTIONS.find((o) => o.value === settings.playbackMode)?.hint}
+        </p>
       </div>
       {mutation.isError && (
         <p role="alert" className="text-sm text-destructive">

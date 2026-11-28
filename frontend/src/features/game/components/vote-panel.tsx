@@ -3,6 +3,7 @@
 import { PlayerPresence, type GameSnapshotDto, type RoomSnapshotDto } from '@pmp/shared';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { newRequestId } from '@/lib/request-id';
 import { cn } from '@/lib/utils';
 import type { RoomConnection } from '../../room/hooks/use-room-connection';
 import { useRoomStore } from '../../room/room-store';
@@ -37,7 +38,7 @@ export function VotePanel({
   const votedFor = candidates.find((c) => c.playerId === myVote);
 
   const vote = async (suspectPlayerId: string) => {
-    const clientRequestId = request.round === game.roundNumber ? request.id : crypto.randomUUID();
+    const clientRequestId = request.round === game.roundNumber ? request.id : newRequestId();
     setRequest({ round: game.roundNumber, id: clientRequestId });
     const result = await submit.run({
       roundNumber: game.roundNumber,

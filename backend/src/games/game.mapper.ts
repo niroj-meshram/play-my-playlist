@@ -1,12 +1,13 @@
-import type {
-  ActiveGamePhase,
-  GameResultsDto,
-  GameVersioned,
-  PublicRoundDto,
-  PublicTrackDto,
-  RoundRevealDto,
-  ScoreboardEntryDto,
-  VoteCandidateDto,
+import {
+  PlaybackMode,
+  type ActiveGamePhase,
+  type GameResultsDto,
+  type GameVersioned,
+  type PublicRoundDto,
+  type PublicTrackDto,
+  type RoundRevealDto,
+  type ScoreboardEntryDto,
+  type VoteCandidateDto,
 } from '@pmp/shared';
 import type { Prisma } from '../generated/prisma/client.js';
 import { computeAwards, rankScoreboard } from './domain/final-results.js';
@@ -42,6 +43,7 @@ export type Song = Prisma.PlaylistTrackGetPayload<{ select: typeof SONG_SELECT }
  */
 export const PUBLIC_ROUND_SELECT = {
   roundNumber: true,
+  startedAt: true,
   ...SONG_SELECT,
   gamePlaylist: { select: { publicLabel: true } },
 } as const satisfies Prisma.GameRoundSelect;
@@ -97,7 +99,18 @@ export function toPublicRound(row: PublicRoundRow): PublicRoundDto {
     roundNumber: row.roundNumber,
     playlistLabel: row.gamePlaylist.publicLabel,
     track: toPublicTrack(row),
+    // Set whenever a round is activated or its song replaced; public rounds are active.
+    startedAt: (row.startedAt ?? new Date()).toISOString(),
   };
+}
+
+/** The playback mode fixed at game start; games from before it existed played on the leader only. */
+export function parsePlaybackMode(settingsSnapshot: unknown): PlaybackMode {
+  const mode =
+    typeof settingsSnapshot === 'object' && settingsSnapshot !== null
+      ? (settingsSnapshot as { playbackMode?: unknown }).playbackMode
+      : undefined;
+  return mode === PlaybackMode.EVERY_DEVICE ? PlaybackMode.EVERY_DEVICE : PlaybackMode.LEADER_ONLY;
 }
 
 export function versioned(stateVersion: number): GameVersioned {

@@ -11,6 +11,7 @@ import {
   loadPublicRound,
   loadReveal,
   loadScoreboard,
+  parsePlaybackMode,
   toCandidates,
   toResults,
   versioned,
@@ -43,6 +44,7 @@ export class GameQueryService {
         stateVersion: true,
         phaseStartedAt: true,
         endReason: true,
+        settingsSnapshot: true,
         playlists: { select: { publicLabel: true }, orderBy: { publicLabel: 'asc' } },
       },
     });
@@ -64,6 +66,7 @@ export class GameQueryService {
     return {
       ...versioned(game.stateVersion),
       gameNumber: game.gameNumber,
+      playbackMode: parsePlaybackMode(game.settingsSnapshot),
       phase: game.phase,
       roundNumber: game.currentRound,
       totalRounds: game.totalRounds,

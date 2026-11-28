@@ -283,6 +283,45 @@ describe('Game engine (e2e)', () => {
       expect(second).toMatchObject({ gameNumber: 2, phase: 'PLAYING', roundNumber: 1 });
     });
 
+    it('fixes the playback mode at start and gives every song its server start time', async () => {
+      const l = await lobby(3);
+      await api()
+        .patch(`/api/v1/rooms/${l.code}/settings`)
+        .set(...bearer(l.host.guest))
+        .send({ playbackMode: 'EVERY_DEVICE' })
+        .expect(200);
+      const before = Date.now();
+      const started = await startGame(l);
+      expect(started.playbackMode).toBe('EVERY_DEVICE');
+      const startedAt = Date.parse(started.currentRound!.startedAt);
+      expect(startedAt).toBeGreaterThanOrEqual(before - 1_000);
+      expect(startedAt).toBeLessThanOrEqual(Date.now() + 1_000);
+
+      // Settings cannot change mid-game, so the mode cannot either.
+      await api()
+        .patch(`/api/v1/rooms/${l.code}/settings`)
+        .set(...bearer(l.host.guest))
+        .send({ playbackMode: 'LEADER_ONLY' })
+        .expect(409);
+
+      // The next song gets its own start time; a viewer's resync carries it too.
+      for (let i = 0; i < 4; i += 1) await step(l);
+      const snapshot = okData(await emitAck(l.members[1]!.socket, 'sync:request', {})).game!;
+      expect(snapshot).toMatchObject({
+        playbackMode: 'EVERY_DEVICE',
+        phase: 'PLAYING',
+        roundNumber: 2,
+      });
+      const round2 = (await game(l.roomId)).rounds[1]!;
+      expect(snapshot.currentRound?.startedAt).toBe(round2.startedAt?.toISOString());
+      expect(Date.parse(snapshot.currentRound!.startedAt)).toBeGreaterThanOrEqual(startedAt);
+    });
+
+    it('plays on the leader only by default', async () => {
+      const l = await lobby(3);
+      expect((await startGame(l)).playbackMode).toBe('LEADER_ONLY');
+    });
+
     it('shortens the game so every playlist keeps its fair share', async () => {
       const l = await lobby(3, { songs: 5, roundCount: 20 });
       expect((await startGame(l)).totalRounds).toBe(15);
@@ -348,6 +387,14 @@ describe('Game engine (e2e)', () => {
         ytErrorCode: 150,
       });
       expect(okData(stale).applied).toBe(false);
+    });
+
+    it('explains, instead of failing, when ready playlists have no playable songs left', async () => {
+      const l = await lobby(3);
+      await t.prisma.playlistTrack.updateMany({ data: { status: 'UNPLAYABLE' } });
+      const ack = await start(l.host);
+      expect(errorCode(ack)).toBe(ErrorCode.PLAYLISTS_NOT_READY);
+      expect(ack.ok ? '' : ack.error.message).toMatch(/no playable songs left/);
     });
 
     it('drops the round when its playlist has no songs left and moves on', async () => {

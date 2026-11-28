@@ -57,6 +57,12 @@ enum RoomVisibility {
   INVITE_ONLY
 }
 
+/// Where the song plays (D3, D3b): only the leader's device, or every player's device in sync.
+enum PlaybackMode {
+  LEADER_ONLY
+  EVERY_DEVICE
+}
+
 enum RoomPlayerStatus {
   ACTIVE
   LEFT
@@ -69,6 +75,7 @@ model Room {
   visibility     RoomVisibility @default(INVITE_ONLY)
   maxPlayers     Int            @db.SmallInt
   roundCount     Int            @db.SmallInt
+  playbackMode   PlaybackMode   @default(LEADER_ONLY)
   hostPlayerId   String?        @unique @db.Uuid
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt

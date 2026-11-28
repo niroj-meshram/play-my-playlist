@@ -44,7 +44,7 @@ describe('Rooms (e2e)', () => {
       expect(room).toMatchObject({
         status: 'LOBBY',
         visibility: 'INVITE_ONLY',
-        settings: { maxPlayers: 5, roundCount: 10 },
+        settings: { maxPlayers: 5, roundCount: 10, playbackMode: 'LEADER_ONLY' },
       });
       expect(room.players).toEqual([
         expect.objectContaining({ displayName: 'Host', isHost: true, id: room.viewerPlayerId }),
@@ -55,12 +55,13 @@ describe('Rooms (e2e)', () => {
     it('accepts custom settings and rejects out-of-range ones', async () => {
       const host = await createGuest(t.app, 'Host');
 
-      expect((await createRoom(host, { maxPlayers: 8, roundCount: 15 })).settings).toEqual({
-        maxPlayers: 8,
-        roundCount: 15,
-      });
+      expect(
+        (await createRoom(host, { maxPlayers: 8, roundCount: 15, playbackMode: 'EVERY_DEVICE' }))
+          .settings,
+      ).toEqual({ maxPlayers: 8, roundCount: 15, playbackMode: 'EVERY_DEVICE' });
 
       for (const settings of [
+        { playbackMode: 'EVERYWHERE' },
         { maxPlayers: 2 },
         { maxPlayers: 11 },
         { roundCount: 4 },
@@ -339,7 +340,38 @@ describe('Rooms (e2e)', () => {
         .set(...bearer(host))
         .send({ roundCount: 12, maxPlayers: 6 })
         .expect(200);
-      expect(updated.body.settings).toEqual({ maxPlayers: 6, roundCount: 12 });
+      expect(updated.body.settings).toEqual({
+        maxPlayers: 6,
+        roundCount: 12,
+        playbackMode: 'LEADER_ONLY',
+      });
+    });
+
+    it('switches between same-room and remote playback and tells everyone', async () => {
+      const host = await createGuest(t.app, 'Host');
+      const friend = await createGuest(t.app, 'Friend');
+      const room = await createRoom(host);
+      await join(friend, room.code).expect(200);
+
+      const denied = await api()
+        .patch(`/api/v1/rooms/${room.code}/settings`)
+        .set(...bearer(friend))
+        .send({ playbackMode: 'EVERY_DEVICE' })
+        .expect(403);
+      expect(denied.body.error.code).toBe(ErrorCode.NOT_ROOM_HOST);
+
+      const updated = await api()
+        .patch(`/api/v1/rooms/${room.code}/settings`)
+        .set(...bearer(host))
+        .send({ playbackMode: 'EVERY_DEVICE' })
+        .expect(200);
+      expect(updated.body.settings).toMatchObject({ playbackMode: 'EVERY_DEVICE', roundCount: 10 });
+
+      const seen = await api()
+        .get(`/api/v1/rooms/${room.code}`)
+        .set(...bearer(friend))
+        .expect(200);
+      expect(seen.body.settings.playbackMode).toBe('EVERY_DEVICE');
     });
 
     it('refuses a max player count below the current number of players', async () => {

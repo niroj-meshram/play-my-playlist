@@ -1,4 +1,5 @@
 import type { GamePhase } from './game-phase.js';
+import type { PlaybackMode } from './rooms.js';
 
 /** Phases of a running game (LOBBY is a room state, not a game phase). */
 export type ActiveGamePhase = Exclude<GamePhase, 'LOBBY'>;
@@ -29,6 +30,8 @@ export interface PublicRoundDto {
   /** Anonymous, CSPRNG-shuffled label such as "Playlist C". */
   playlistLabel: string;
   track: PublicTrackDto;
+  /** When this song started on the server (ISO); every device syncs to it in EVERY_DEVICE mode. */
+  startedAt: string;
 }
 
 /** Why a player received points in a round (docs/architecture.md §5). */
@@ -133,6 +136,8 @@ export interface GameVersioned {
 /** Authoritative game state for one viewer (docs/architecture.md §4, §11). */
 export interface GameSnapshotDto extends GameVersioned {
   gameNumber: number;
+  /** Fixed when the game starts. */
+  playbackMode: PlaybackMode;
   phase: ActiveGamePhase;
   roundNumber: number;
   totalRounds: number;

@@ -1,6 +1,6 @@
 import type { MyPlaylistDto } from '@pmp/shared';
 import { Button } from '@/components/ui/button';
-import { REJECTION_MESSAGES } from '../rejection-messages';
+import { rejectionMessage } from '../rejection-messages';
 
 interface PlaylistStatusProps {
   playlist: MyPlaylistDto;
@@ -21,9 +21,7 @@ export function PlaylistStatus({ playlist, busy, onReplace, onRemove }: Playlist
   }
 
   if (playlist.status === 'REJECTED') {
-    const message = playlist.rejectionCode
-      ? REJECTION_MESSAGES[playlist.rejectionCode]
-      : 'This playlist could not be used.';
+    const message = rejectionMessage(playlist);
     return (
       <div className="flex flex-col gap-3">
         <p role="alert" className="text-sm text-destructive">

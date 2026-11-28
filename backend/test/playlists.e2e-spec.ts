@@ -213,6 +213,30 @@ describe('Playlists (e2e)', () => {
   });
 
   describe('duplicate songs (D6)', () => {
+    it('sees playlist edits made on YouTube when a playlist is resubmitted', async () => {
+      const { code, members } = await lobby(2);
+      const [alice, bob] = members as [Member, Member];
+      // Alice's playlist holds song "x"; Bob's small playlist holds it too.
+      youtube.addPlaylist('PLalice0001', 'Alice', [...songs('a', 6), 'x']);
+      youtube.addPlaylist('PLbob000001', 'Bob', [...songs('b', 4), 'x']);
+      expect((await submitAndSettle(alice, code, 'PLalice0001')).playableCount).toBe(7);
+      expect(await submitAndSettle(bob, code, 'PLbob000001')).toMatchObject({
+        status: 'REJECTED',
+        rejectionCode: 'NOT_ENOUGH_UNIQUE_SONGS',
+        playableCount: 4,
+        duplicateCount: 1,
+      });
+
+      // Alice moves "x" out of her playlist on YouTube and resubmits it straight away.
+      youtube.addPlaylist('PLalice0001', 'Alice', songs('a', 6));
+      expect((await submitAndSettle(alice, code, 'PLalice0001')).playableCount).toBe(6);
+      expect(await submitAndSettle(bob, code, 'PLbob000001')).toMatchObject({
+        status: 'READY',
+        playableCount: 5,
+        duplicateCount: 0,
+      });
+    });
+
     it('drops songs already in a ready playlist from the later one only', async () => {
       const { code, members } = await lobby(3);
       const [a, b, c] = members as [Member, Member, Member];

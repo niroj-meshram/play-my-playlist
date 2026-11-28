@@ -1,6 +1,7 @@
 import {
   PlayerPresence,
   type AvatarId,
+  type PlaybackMode,
   type GameSnapshotDto,
   type RoomPlayerDto,
   type RoomPreviewDto,
@@ -18,6 +19,7 @@ export interface RoomWithActivePlayers {
   visibility: RoomVisibility;
   maxPlayers: number;
   roundCount: number;
+  playbackMode: PlaybackMode;
   hostPlayerId: string | null;
   players: {
     id: string;
@@ -36,6 +38,7 @@ export const ROOM_SNAPSHOT_SELECT = {
   visibility: true,
   maxPlayers: true,
   roundCount: true,
+  playbackMode: true,
   hostPlayerId: true,
   players: {
     where: { status: 'ACTIVE' },
@@ -62,7 +65,11 @@ export function toRoomSnapshotDto(
     code: room.code,
     status: room.status,
     visibility: room.visibility,
-    settings: { maxPlayers: room.maxPlayers, roundCount: room.roundCount },
+    settings: {
+      maxPlayers: room.maxPlayers,
+      roundCount: room.roundCount,
+      playbackMode: room.playbackMode,
+    },
     hostPlayerId: room.hostPlayerId,
     players: room.players.map((p): RoomPlayerDto => ({
       id: p.id,

@@ -2,6 +2,7 @@
 
 import { ROOM_LIMITS, type RoomSnapshotDto } from '@pmp/shared';
 import { Button } from '@/components/ui/button';
+import { newRequestId } from '@/lib/request-id';
 import type { RoomConnection } from '../../room/hooks/use-room-connection';
 import { useGameCommand } from '../use-game-command';
 
@@ -40,7 +41,7 @@ export function StartGameButton({
       <Button
         className="self-start"
         disabled={blocker !== null || start.pending}
-        onClick={() => void start.run({ clientRequestId: crypto.randomUUID() })}
+        onClick={() => void start.run({ clientRequestId: newRequestId() })}
       >
         {start.pending ? 'Starting…' : 'Start game'}
       </Button>
