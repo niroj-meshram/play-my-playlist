@@ -30,7 +30,7 @@ const room: RoomSnapshotDto = {
   code: 'ABC234',
   status: 'LOBBY',
   visibility: 'INVITE_ONLY',
-  settings: { maxPlayers: 5, roundCount: 10 },
+  settings: { maxPlayers: 5, roundCount: 10, playbackMode: 'LEADER_ONLY' },
   hostPlayerId: 'a',
   players: [
     player('a', '2026-01-01T00:00:00Z', { isHost: true }),
@@ -73,10 +73,8 @@ describe('room event reducers', () => {
   });
 
   it('replaces settings', () => {
-    expect(applySettings(room, { settings: { maxPlayers: 8, roundCount: 12 } }).settings).toEqual({
-      maxPlayers: 8,
-      roundCount: 12,
-    });
+    const settings = { maxPlayers: 8, roundCount: 12, playbackMode: 'EVERY_DEVICE' as const };
+    expect(applySettings(room, { settings }).settings).toEqual(settings);
   });
 
   it('marks only that player as having a ready playlist', () => {

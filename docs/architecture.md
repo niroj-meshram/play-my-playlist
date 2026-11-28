@@ -17,6 +17,7 @@ Where it conflicts with `PROJECT_PROMPT.md`, this document wins (see §1 Decisio
 | D2a | Playlist selection | **Balanced random**: playlists are drawn in shuffled rotations, so each one gets a fair share in an unpredictable order. | Approved |
 | D3 | Playback | **Only the leader's (host's) device plays the song.** Other devices show the song card. | Approved |
 | D3a | Song stop | **The leader stops the song** to move on to discussion. The song ending naturally on the leader's device also moves on. | Approved |
+| D3b | Remote play | The host picks the room's **playback mode** in the lobby: **Same room** (`LEADER_ONLY`, D3, the default) or **Remote** (`EVERY_DEVICE`): every player's device plays the song from its server start time (`round.startedAt`), using a `time:ping` clock estimate and seeking back into step when it drifts more than 1.5 s. The mode is fixed at game start (`settingsSnapshot`). Only the leader's player reports endings and errors; a song failing on another device affects that device only. Ads are per device and cannot be skipped, so remote devices can be a few seconds apart during an ad. | Approved |
 | D4 | Who votes | **Everyone votes, including the owner**, so voting behaviour never reveals the owner. Self-voting is blocked, so the owner's vote can never be correct. | Approved |
 | D4a | Voting time | **No voting time limit.** Voting ends when every required player has voted. | Approved |
 | D4b | Missing votes | A player who doesn't vote is **not counted**. No automatic random votes. Disconnected players (past the 30 s grace) are skipped, and the **leader can press "Close voting"** at any time. | Approved |
@@ -116,7 +117,7 @@ erDiagram
 
   User { uuid id PK; string displayName; string avatarId; ts createdAt; ts lastSeenAt }
   AuthSession { uuid id PK; uuid userId FK; string refreshTokenHash UK; string previousTokenHash; ts rotatedAt; ts expiresAt; ts revokedAt }
-  Room { uuid id PK; string code UK; uuid hostPlayerId FK "nullable, UK"; enum status "LOBBY|IN_GAME|CLOSED"; enum visibility "INVITE_ONLY"; int maxPlayers; int roundCount; ts lastActivityAt }
+  Room { uuid id PK; string code UK; uuid hostPlayerId FK "nullable, UK"; enum status "LOBBY|IN_GAME|CLOSED"; enum visibility "INVITE_ONLY"; int maxPlayers; int roundCount; enum playbackMode "LEADER_ONLY|EVERY_DEVICE"; ts lastActivityAt }
   RoomPlayer { uuid id PK; uuid roomId FK; uuid userId FK; string displayName; string avatarId; enum status "ACTIVE|LEFT"; ts joinedAt; ts leftAt }
   Playlist { uuid id PK; uuid roomPlayerId FK "UK = owner"; uuid roomId FK; string youtubePlaylistId; string sourceUrl "PRIVATE"; string title "PRIVATE"; enum status "PROCESSING|READY|REJECTED"; string rejectionCode; int playableCount; int duplicateCount; uuid submissionId; int attempts; ts submittedAt; ts processingStartedAt; ts readyAt }
   PlaylistTrack { uuid id PK; uuid playlistId FK; uuid roomId FK "denormalised"; string youtubeVideoId; string title; string artist; string thumbnailUrl; int durationSec; int position; enum status "PLAYABLE|DUPLICATE|UNPLAYABLE" }
@@ -221,7 +222,7 @@ Example: with 4 players and 10 rounds, the split is 3/3/2/2 in an unpredictable 
 - The owner's own vote can never be correct (self-voting is blocked), so it needs no special case.
 - If the owner is offline (past the grace period) when voting closes, nobody could have voted for them, so the owner gets 0 instead of +10 (D12).
 - Votes not cast are not counted.
-- The point values are stored in `Game.settingsSnapshot`, so changing rules never alters old games.
+- The point values are stored in `Game.settingsSnapshot` (with `roundCount` and `playbackMode`), so changing rules never alters old games.
 
 ### Final awards
 Final ranking (ties share a rank), most correct guesses, and best bluffer (most `OWNER_UNGUESSED` points).
@@ -334,7 +335,7 @@ Error envelope: `{ error: { code, message, details? }, requestId }`. Error codes
 | `playlist:my-status` | **player** | `{playlist: {status, sourceUrl, title, playableCount, duplicateCount, rejectionCode, submittedAt} \| null}` (`null` after removal) |
 | `game:started` | room | `{gameNumber, totalRounds, playlistLabels}`. Clients resync to get their private context. |
 | `game:phase-changed` | room | `{phase, roundNumber, totalRounds, phaseStartedAt, endReason}`. Also sent with the same phase when `totalRounds` shrinks. `endReason` is set from SCOREBOARD on. |
-| `game:round-started` | room | `{round: {roundNumber, playlistLabel, track:{videoId,title,artist,thumbnailUrl,durationSec}}}` |
+| `game:round-started` | room | `{round: {roundNumber, playlistLabel, track:{videoId,title,artist,thumbnailUrl,durationSec}, startedAt}}`. `startedAt` changes when the song is replaced; remote devices sync to it (D3b). |
 | `game:track-replaced` | room | Same shape as `round-started` |
 | `round:viewer-context` | **player** | `{roundNumber, viewer: {isYourPlaylist, candidates: [{playerId, displayName, avatarId}], myVote}}`. Candidates are every other participant still in the room (the same list for everyone but the viewer); clients grey out AWAY ones from live presence. |
 | `vote:progress` | room | `{roundNumber, votesIn, expected}`. Sent when voting opens and whenever the counts change. `expected` = online participants plus anyone who already voted. |
@@ -420,10 +421,12 @@ Approved dependencies: pnpm workspaces, `@nestjs/config`, `@nestjs/jwt`, `@nestj
 | Sync | Broadcast lost between commit and emit | Version-gap detection, `sync:request` on reconnect/tab focus |
 | Sync | Multiple backend instances | Socket.IO Redis adapter; sticky sessions or websocket-only transport |
 | Game flow | Game stalls on an idle voter or idle leader | Leader "Close voting"; host migration on disconnect |
-| YouTube | 10,000 units/day default quota (~9 units per 200-song playlist) | Cap of ~200 items, Redis cache, per-user rate limit, clear "try later" error, request a quota extension early |
+| YouTube | 10,000 units/day default quota (~9 units per 200-song playlist) | Cap of ~200 items, per-user rate limit, clear "try later" error, request a quota extension early. The Redis cache is keyed per **submission**: only retries of the same submission reuse it, so every new submission or replacement reads YouTube afresh and a player's playlist edits are never hidden (a per-playlist 1 h cache caused false duplicate rejections). |
 | YouTube | Private / LL / WL / mix playlists | Detected at parse time or from the API error, with a specific message |
 | YouTube | Embedding disabled, region-blocked, age-restricted, deleted later | Filtered at ingestion; leader reports runtime errors (100/101/150) and the track is replaced from the same playlist |
-| YouTube | Browser autoplay blocking | Only the leader plays: one "Tap to enable audio" gesture; the player instance is reused with `loadVideoById` |
+| YouTube | Browser autoplay blocking | One "Play song" tap per page load on every playing device; the player instance is reused with `loadVideoById`, and a song that does not start within 4 s asks for the tap again |
+| YouTube | Ads (monetized videos) | Decided by YouTube per video and viewer; never skipped or hidden. Same-room mode limits them to the host's device. The player stays visible (≥ 200×200 px). It uses the standard `youtube.com` host: with `youtube-nocookie.com` every song failed (2026-11-28) |
+| YouTube | One device refusing every song (embed refused, browser issue) would skip and mark every song in seconds | A device that fails two songs in a row, without one playing in between, stops reporting and shows the YouTube error with a "Try again" button; the leader can still "Stop song". Repeated error events for one video count once. Starting with no playable songs left is a clear `PLAYLISTS_NOT_READY` error |
 | YouTube | No "artist" field | Parse "Artist - Title", strip " - Topic", best-effort |
 | YouTube | Developer Policies on data storage | Purge playlists/tracks when rooms expire (≤ 7 days); privacy policy and attribution |
 | Voting | Concurrent or duplicate votes, vote/reveal race | Row lock + unique constraint + idempotency key (§6) |

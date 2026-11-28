@@ -279,7 +279,14 @@ export class GameOrchestrator {
       room.roundCount,
     );
     const first = plan[0];
-    if (!first) throw new Error('A game cannot start without songs');
+    // READY playlists whose songs were all reported unplayable leave nothing to plan.
+    if (!first) {
+      throw new AppException(
+        ErrorCode.PLAYLISTS_NOT_READY,
+        'Some playlists have no playable songs left. Ask those players to submit their playlist again.',
+        HttpStatus.CONFLICT,
+      );
+    }
 
     const previous = await tx.game.findFirst({
       where: { roomId },
@@ -302,7 +309,11 @@ export class GameOrchestrator {
         stateVersion,
         phaseStartedAt: now,
         startedAt: now,
-        settingsSnapshot: { roundCount: room.roundCount, scoring: SCORING_DEFAULTS },
+        settingsSnapshot: {
+          roundCount: room.roundCount,
+          playbackMode: room.playbackMode,
+          scoring: SCORING_DEFAULTS,
+        },
       },
     });
     await tx.gameParticipant.createMany({
@@ -353,6 +364,7 @@ export class GameOrchestrator {
             roundNumber: 1,
             playlistLabel: labelOf.get(first.playlistId) ?? '',
             track: toPublicTrack(first.track),
+            startedAt: now.toISOString(),
           },
         },
       },
@@ -552,7 +564,9 @@ export class GameOrchestrator {
         data: { ...song, startedAt: now },
       });
       const round = await loadPublicRound(tx, game.id, game.currentRound);
-      this.logger.log(`Replaced an unplayable song in game ${game.id}`);
+      this.logger.log(
+        `Replaced an unplayable song in game ${game.id} (YouTube error ${ytErrorCode ?? 'none'})`,
+      );
       return round
         ? [{ kind: 'round', replaced: true, event: { ...versioned(stateVersion), round } }]
         : [];
@@ -563,7 +577,9 @@ export class GameOrchestrator {
     });
     await renumberRoundsAfter(tx, game.id, game.currentRound - 1);
     const totalRounds = game.totalRounds - 1;
-    this.logger.log(`Dropped a round without playable songs in game ${game.id}`);
+    this.logger.log(
+      `Dropped a round without playable songs in game ${game.id} (YouTube error ${ytErrorCode ?? 'none'})`,
+    );
 
     if (game.currentRound > totalRounds) {
       const shortened = { ...game, totalRounds, currentRound: Math.max(totalRounds, 1) };

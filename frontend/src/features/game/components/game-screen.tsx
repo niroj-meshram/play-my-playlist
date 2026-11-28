@@ -7,9 +7,11 @@ import { LeaveRoomButton } from '../../room/components/leave-room-button';
 import { PlayerList } from '../../room/components/player-list';
 import { FinalResults } from './final-results';
 import { LeaderControls } from './leader-controls';
+
 import { RevealDetails } from './reveal-details';
 import { Scoreboard } from './scoreboard';
 import { SongCard } from './song-card';
+import { SongPlayer } from './song-player';
 import { VotePanel } from './vote-panel';
 
 const PHASE_TITLE: Record<ActiveGamePhase, string> = {
@@ -21,10 +23,14 @@ const PHASE_TITLE: Record<ActiveGamePhase, string> = {
   FINISHED: 'Game over',
 };
 
-function phaseHint(game: GameSnapshotDto, leaderName: string): string {
+function phaseHint(game: GameSnapshotDto, leaderName: string, isLeader: boolean): string {
   switch (game.phase) {
     case 'PLAYING':
-      return `The song is playing on ${leaderName}'s device.`;
+      if (isLeader)
+        return 'Play the song for everyone, then stop it when you are ready to discuss.';
+      return game.playbackMode === 'EVERY_DEVICE'
+        ? `Listen along. ${leaderName} stops the song when it is time to discuss.`
+        : `The song is playing on ${leaderName}'s device.`;
     case 'DISCUSSION':
       return 'Whose playlist is this song from? Talk it over.';
     case 'VOTING':
@@ -55,7 +61,20 @@ export function GameScreen({
   const isLeader = room.hostPlayerId === room.viewerPlayerId;
   const leaderName =
     room.players.find((p) => p.id === room.hostPlayerId)?.displayName ?? 'the host';
-  const hint = phaseHint(game, leaderName);
+  const hint = phaseHint(game, leaderName, isLeader);
+  // Same room: only the leader's device plays (D3). Remote: every device plays from the
+  // song's server start time (D3b). The player stays mounted from round to round so audio,
+  // once unlocked by a tap, keeps working from song to song.
+  const remote = game.playbackMode === 'EVERY_DEVICE';
+  const round = game.currentRound;
+  const playbackTarget =
+    game.phase === 'PLAYING' && round
+      ? {
+          roundNumber: round.roundNumber,
+          videoId: round.track.videoId,
+          ...(remote ? { startedAtMs: Date.parse(round.startedAt) } : {}),
+        }
+      : null;
   const reveal = game.phase === 'REVEAL' ? game.lastReveal : null;
   const results = game.phase === 'SCOREBOARD' ? game.results : null;
 
@@ -68,6 +87,14 @@ export function GameScreen({
         </span>
       </header>
 
+      {(isLeader || remote) && !results && (
+        <SongPlayer
+          target={playbackTarget}
+          connection={connection}
+          isLeader={isLeader}
+          mode={game.playbackMode}
+        />
+      )}
       {game.currentRound && (
         <SongCard round={game.currentRound} isYours={game.viewer.isYourPlaylist} />
       )}

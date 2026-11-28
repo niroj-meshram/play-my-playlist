@@ -35,13 +35,13 @@ export class PlaylistIngestionService {
     if (!row || row.submissionId !== job.submissionId || row.status !== PlaylistStatus.PROCESSING) {
       return;
     }
-    await this.commit(job, await this.fetch(row.youtubePlaylistId));
+    await this.commit(job, await this.fetch(row.youtubePlaylistId, job.submissionId));
   }
 
-  private async fetch(youtubePlaylistId: string): Promise<Outcome> {
+  private async fetch(youtubePlaylistId: string, submissionId: string): Promise<Outcome> {
     let playlist: FetchedPlaylist;
     try {
-      playlist = await this.fetcher.fetch(youtubePlaylistId);
+      playlist = await this.fetcher.fetch(youtubePlaylistId, submissionId);
     } catch (error) {
       if (error instanceof YoutubeError) return { kind: 'rejected', code: error.code };
       throw error; // Unexpected: the row stays PROCESSING and recovery retries it.

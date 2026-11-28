@@ -23,6 +23,7 @@ const round = (n: number, videoId = `vid${n}`): PublicRoundDto => ({
   roundNumber: n,
   playlistLabel: 'Playlist B',
   track: { videoId, title: `Song ${n}`, artist: null, thumbnailUrl: null, durationSec: 200 },
+  startedAt: '2026-01-01T00:00:00Z',
 });
 
 const viewer = (isYourPlaylist: boolean, myVote: string | null = null): GameViewerContextDto => ({
@@ -51,6 +52,7 @@ const game: GameSnapshotDto = {
   stateVersion: 5,
   serverTime: 0,
   gameNumber: 1,
+  playbackMode: 'LEADER_ONLY',
   phase: 'REVEAL',
   roundNumber: 2,
   totalRounds: 10,
@@ -69,7 +71,7 @@ const room: RoomSnapshotDto = {
   code: 'ABC234',
   status: 'IN_GAME',
   visibility: 'INVITE_ONLY',
-  settings: { maxPlayers: 5, roundCount: 10 },
+  settings: { maxPlayers: 5, roundCount: 10, playbackMode: 'LEADER_ONLY' },
   hostPlayerId: 'a',
   players: [],
   viewerPlayerId: 'b',

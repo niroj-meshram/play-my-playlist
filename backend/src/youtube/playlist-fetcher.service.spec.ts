@@ -16,7 +16,7 @@ class FakeClient extends YoutubeClient {
   videoCalls: string[][] = [];
   pageCalls = 0;
   constructor(
-    private readonly videoIds: string[],
+    public videoIds: string[],
     private readonly videos: Map<string, YtVideo>,
     private readonly exists = true,
   ) {
@@ -47,9 +47,10 @@ function memoryCache() {
   const store = new Map<string, FetchedPlaylist>();
   return {
     store,
-    get: jest.fn(async (id: string) => store.get(id) ?? null),
-    has: async (id: string) => store.has(id),
-    set: jest.fn(async (id: string, p: FetchedPlaylist) => void store.set(id, p)),
+    get: jest.fn(async (id: string, sub: string) => store.get(`${id}:${sub}`) ?? null),
+    set: jest.fn(
+      async (id: string, sub: string, p: FetchedPlaylist) => void store.set(`${id}:${sub}`, p),
+    ),
   };
 }
 
@@ -67,7 +68,7 @@ describe('PlaylistFetcherService', () => {
       config(),
     );
 
-    const result = await fetcher.fetch('PL1');
+    const result = await fetcher.fetch('PL1', 'sub-1');
 
     expect(result.title).toBe('Road trip');
     expect(result.tracks).toHaveLength(200);
@@ -91,12 +92,12 @@ describe('PlaylistFetcherService', () => {
       config(),
     );
 
-    const result = await fetcher.fetch('PL1');
+    const result = await fetcher.fetch('PL1', 'sub-1');
 
     expect(result.tracks.map((t) => t.videoId)).toEqual(['ok1', 'ok2']);
   });
 
-  it('serves repeat fetches from the cache', async () => {
+  it('serves retries of the same submission from the cache', async () => {
     const cache = memoryCache();
     const client = new FakeClient(['a'], new Map([['a', ytVideo('a')]]));
     const fetcher = new PlaylistFetcherService(
@@ -105,12 +106,29 @@ describe('PlaylistFetcherService', () => {
       config(),
     );
 
-    const first = await fetcher.fetch('PL1');
-    const second = await fetcher.fetch('PL1');
+    const first = await fetcher.fetch('PL1', 'sub-1');
+    const retry = await fetcher.fetch('PL1', 'sub-1');
 
-    expect(second).toEqual(first);
+    expect(retry).toEqual(first);
     expect(client.pageCalls).toBe(1);
     expect(cache.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads YouTube again for a new submission, so playlist edits are never hidden', async () => {
+    const videos = new Map(['a', 'b', 'c'].map((id) => [id, ytVideo(id)]));
+    const client = new FakeClient(['a', 'b'], videos);
+    const fetcher = new PlaylistFetcherService(
+      client,
+      memoryCache() as unknown as PlaylistCacheService,
+      config(),
+    );
+
+    expect((await fetcher.fetch('PL1', 'sub-1')).tracks.map((t) => t.videoId)).toEqual(['a', 'b']);
+    client.videoIds = ['a', 'c']; // the owner moved song "b" out of the playlist on YouTube
+    const resubmitted = await fetcher.fetch('PL1', 'sub-2');
+
+    expect(resubmitted.tracks.map((t) => t.videoId)).toEqual(['a', 'c']);
+    expect(client.pageCalls).toBe(2);
   });
 
   it('reports a private or deleted playlist as PLAYLIST_NOT_FOUND', async () => {
@@ -120,6 +138,8 @@ describe('PlaylistFetcherService', () => {
       config(),
     );
 
-    await expect(fetcher.fetch('PL1')).rejects.toMatchObject({ code: 'PLAYLIST_NOT_FOUND' });
+    await expect(fetcher.fetch('PL1', 'sub-1')).rejects.toMatchObject({
+      code: 'PLAYLIST_NOT_FOUND',
+    });
   });
 });

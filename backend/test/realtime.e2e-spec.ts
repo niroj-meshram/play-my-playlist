@@ -188,7 +188,11 @@ describe('Realtime lobby (e2e)', () => {
         .expect(200);
 
       for (const [event] of await Promise.all(updates)) {
-        expect(event.settings).toEqual({ maxPlayers: 5, roundCount: 12 });
+        expect(event.settings).toEqual({
+          maxPlayers: 5,
+          roundCount: 12,
+          playbackMode: 'LEADER_ONLY',
+        });
       }
     });
 

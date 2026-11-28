@@ -13,12 +13,24 @@ export const RoomStatus = {
 } as const;
 export type RoomStatus = (typeof RoomStatus)[keyof typeof RoomStatus];
 
+/**
+ * Where the song plays (docs/architecture.md D3, D3b).
+ * - LEADER_ONLY ("Same room"): only the leader's device plays; everyone listens together.
+ * - EVERY_DEVICE ("Remote"): every player's device plays, synced to the server clock.
+ */
+export const PlaybackMode = {
+  LEADER_ONLY: 'LEADER_ONLY',
+  EVERY_DEVICE: 'EVERY_DEVICE',
+} as const;
+export type PlaybackMode = (typeof PlaybackMode)[keyof typeof PlaybackMode];
+
 export const RoomVisibility = { INVITE_ONLY: 'INVITE_ONLY' } as const;
 export type RoomVisibility = (typeof RoomVisibility)[keyof typeof RoomVisibility];
 
 export interface RoomSettingsDto {
   maxPlayers: number;
   roundCount: number;
+  playbackMode: PlaybackMode;
 }
 
 export interface CreateRoomRequest {

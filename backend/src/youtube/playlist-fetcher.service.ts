@@ -15,8 +15,9 @@ const VIDEO_BATCH = 50;
 const MAX_TITLE = 200;
 
 /**
- * Reads a playlist (first 200 items) and keeps the songs the leader's IFrame player can
- * actually play. Results are cached per playlist to save quota.
+ * Reads a playlist (first 200 items) and keeps the songs the IFrame player can actually
+ * play. Results are cached per submission, so only retries of the same submission reuse
+ * them; every new submission sees the playlist as it is on YouTube now.
  */
 @Injectable()
 export class PlaylistFetcherService {
@@ -34,12 +35,8 @@ export class PlaylistFetcherService {
     return this.client.isConfigured();
   }
 
-  isCached(playlistId: string): Promise<boolean> {
-    return this.cache.has(playlistId);
-  }
-
-  async fetch(playlistId: string): Promise<FetchedPlaylist> {
-    const cached = await this.cache.get(playlistId);
+  async fetch(playlistId: string, submissionId: string): Promise<FetchedPlaylist> {
+    const cached = await this.cache.get(playlistId, submissionId);
     if (cached) return cached;
 
     const playlist = await this.client.getPlaylist(playlistId);
@@ -61,7 +58,7 @@ export class PlaylistFetcherService {
       .map(toFetchedTrack);
 
     const result: FetchedPlaylist = { title: truncate(playlist.snippet.title, MAX_TITLE), tracks };
-    await this.cache.set(playlistId, result);
+    await this.cache.set(playlistId, submissionId, result);
     return result;
   }
 

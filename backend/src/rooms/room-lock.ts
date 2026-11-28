@@ -1,4 +1,4 @@
-import type { Prisma, RoomStatus } from '../generated/prisma/client.js';
+import type { PlaybackMode, Prisma, RoomStatus } from '../generated/prisma/client.js';
 import { roomNotFound } from './room-code.pipe.js';
 
 export interface LockedRoom {
@@ -6,6 +6,7 @@ export interface LockedRoom {
   status: RoomStatus;
   maxPlayers: number;
   roundCount: number;
+  playbackMode: PlaybackMode;
   hostPlayerId: string | null;
 }
 
@@ -18,7 +19,7 @@ export async function lockRoomByCode(
   code: string,
 ): Promise<LockedRoom> {
   const rows = await tx.$queryRaw<LockedRoom[]>`
-    SELECT "id", "status", "maxPlayers", "roundCount", "hostPlayerId"
+    SELECT "id", "status", "maxPlayers", "roundCount", "playbackMode", "hostPlayerId"
     FROM "Room"
     WHERE "code" = ${code} AND "status" <> 'CLOSED'
     FOR UPDATE`;
@@ -33,7 +34,7 @@ export async function lockRoomById(
   roomId: string,
 ): Promise<LockedRoom> {
   const rows = await tx.$queryRaw<LockedRoom[]>`
-    SELECT "id", "status", "maxPlayers", "roundCount", "hostPlayerId"
+    SELECT "id", "status", "maxPlayers", "roundCount", "playbackMode", "hostPlayerId"
     FROM "Room"
     WHERE "id" = ${roomId}::uuid AND "status" <> 'CLOSED'
     FOR UPDATE`;

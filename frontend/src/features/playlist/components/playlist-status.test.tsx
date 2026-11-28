@@ -39,15 +39,38 @@ describe('PlaylistStatus', () => {
     expect(onRemove).toHaveBeenCalled();
   });
 
-  it('explains a rejection and offers another try', () => {
+  it('explains a rejection with the real numbers and offers another try', () => {
     const { onReplace } = renderStatus({
       ...base,
       status: 'REJECTED',
       rejectionCode: 'NOT_ENOUGH_UNIQUE_SONGS',
+      playableCount: 4,
+      duplicateCount: 1,
     });
 
-    expect(screen.getByRole('alert')).toHaveTextContent('already added by other players');
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      '1 song of 5 songs in this playlist was already added by another player, leaving 4. ' +
+        'A playlist needs at least 5 songs nobody else added',
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Try another playlist' }));
     expect(onReplace).toHaveBeenCalled();
+  });
+
+  it('says how many songs can play when too few are playable', () => {
+    renderStatus({
+      ...base,
+      status: 'REJECTED',
+      rejectionCode: 'NOT_ENOUGH_PLAYABLE_SONGS',
+      playableCount: 3,
+      duplicateCount: 0,
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Only 3 songs in this playlist can be played here; at least 5 are needed.',
+    );
+  });
+
+  it('keeps the plain explanation for other rejections', () => {
+    renderStatus({ ...base, status: 'REJECTED', rejectionCode: 'PLAYLIST_NOT_FOUND' });
+    expect(screen.getByRole('alert')).toHaveTextContent('Make sure it is Public or Unlisted');
   });
 });

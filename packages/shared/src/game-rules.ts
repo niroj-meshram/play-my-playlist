@@ -8,6 +8,7 @@ export const ROOM_LIMITS = {
   maxRoundCount: 20,
   minPlayableTracks: 5,
   disconnectGraceSeconds: 30,
+  defaultPlaybackMode: 'LEADER_ONLY',
 } as const;
 
 export const SCORING_DEFAULTS = {

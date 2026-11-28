@@ -61,6 +61,7 @@ export class RoomsService {
               code: this.codes.generate(),
               maxPlayers: dto.settings?.maxPlayers ?? ROOM_LIMITS.defaultMaxPlayers,
               roundCount: dto.settings?.roundCount ?? ROOM_LIMITS.defaultRoundCount,
+              playbackMode: dto.settings?.playbackMode ?? ROOM_LIMITS.defaultPlaybackMode,
             },
             select: { id: true },
           });
@@ -305,6 +306,7 @@ export class RoomsService {
         data: {
           ...(dto.maxPlayers === undefined ? {} : { maxPlayers: dto.maxPlayers }),
           ...(dto.roundCount === undefined ? {} : { roundCount: dto.roundCount }),
+          ...(dto.playbackMode === undefined ? {} : { playbackMode: dto.playbackMode }),
           lastActivityAt: new Date(),
         },
       });

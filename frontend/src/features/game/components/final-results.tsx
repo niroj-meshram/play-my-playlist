@@ -2,6 +2,7 @@
 
 import type { AwardDto, GameResultsDto, ScoreboardEntryDto } from '@pmp/shared';
 import { Button } from '@/components/ui/button';
+import { newRequestId } from '@/lib/request-id';
 import type { RoomConnection } from '../../room/hooks/use-room-connection';
 import { useGameCommand } from '../use-game-command';
 import { Scoreboard } from './scoreboard';
@@ -49,7 +50,7 @@ export function FinalResults({
           <Button
             className="self-start"
             disabled={rematch.pending}
-            onClick={() => void rematch.run({ clientRequestId: crypto.randomUUID() })}
+            onClick={() => void rematch.run({ clientRequestId: newRequestId() })}
           >
             {rematch.pending ? 'Starting…' : 'Play again'}
           </Button>
